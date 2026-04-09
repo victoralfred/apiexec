@@ -4,6 +4,7 @@ project(apiexec VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # -fPIC for shared library support
 
 # Sanitiser option
 option(SANITIZE "Enable ASAN + UBSAN" OFF)
@@ -53,6 +54,32 @@ target_link_libraries(apiexec_adapters
 )
 
 # ---------------------------------------------------------------------------
+# Layer 5: c_api/ — ABI-stable C surface. Depends on all lower layers.
+# ---------------------------------------------------------------------------
+add_library(apiexec_capi
+    c_api/c_api.cpp
+)
+target_include_directories(apiexec_capi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api)
+target_link_libraries(apiexec_capi
+    PUBLIC apiexec_core
+    PRIVATE apiexec_transport apiexec_policy apiexec_adapters
+            nlohmann_json::nlohmann_json
+)
+
+# Shared library for language bindings (Go cgo, Python cffi, etc.)
+add_library(apiexec_shared SHARED c_api/c_api.cpp)
+target_include_directories(apiexec_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api)
+target_link_libraries(apiexec_shared
+    PRIVATE apiexec_transport apiexec_policy apiexec_adapters
+            nlohmann_json::nlohmann_json CURL::libcurl
+)
+set_target_properties(apiexec_shared PROPERTIES
+    OUTPUT_NAME apiexec
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 1
+)
+
+# ---------------------------------------------------------------------------
 # Convenience target: links all layers for binaries that need everything.
 # ---------------------------------------------------------------------------
 add_library(apiexec_all INTERFACE)
@@ -61,6 +88,7 @@ target_link_libraries(apiexec_all INTERFACE
     apiexec_transport
     apiexec_policy
     apiexec_adapters
+    apiexec_capi
 )
 
 # ---------------------------------------------------------------------------
@@ -112,6 +140,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/prefetch_test.cpp")
     add_executable(prefetch_test ../tests/unit/prefetch_test.cpp)
     target_link_libraries(prefetch_test PRIVATE apiexec_policy)
     add_test(NAME prefetch_test COMMAND prefetch_test)
+endif()
+
+# c_api_test: all layers including C API
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/c_api_test.cpp")
+    add_executable(c_api_test ../tests/unit/c_api_test.cpp)
+    target_link_libraries(c_api_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME c_api_test COMMAND c_api_test)
 endif()
 
 # Integration tests
