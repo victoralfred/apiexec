@@ -48,6 +48,7 @@ add_library(apiexec_adapters
     adapters/generic_rest.cpp
     adapters/datadog_metrics.cpp
     adapters/openai.cpp
+    adapters/anthropic.cpp
     adapters/registry.cpp
 )
 target_link_libraries(apiexec_adapters
@@ -200,6 +201,19 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/rate_limit_test.cpp"
     target_include_directories(rate_limit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
     target_link_libraries(rate_limit_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
     add_test(NAME rate_limit_test COMMAND rate_limit_test)
+endif()
+
+# Cost accounting integration test
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/cost_accounting_test.cpp")
+    add_executable(cost_accounting_test ../tests/integration/cost_accounting_test.cpp)
+    target_link_libraries(cost_accounting_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME cost_accounting_test COMMAND cost_accounting_test)
+endif()
+
+# Summarisation example
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/summarise.cpp")
+    add_executable(summarise examples/summarise.cpp)
+    target_link_libraries(summarise PRIVATE apiexec_all nlohmann_json::nlohmann_json)
 endif()
 
 # Soak test (configurable duration; default 10s for CI, 86400 for full soak)
