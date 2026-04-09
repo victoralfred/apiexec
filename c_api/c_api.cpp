@@ -9,6 +9,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 using namespace apiexec;
 
@@ -17,10 +18,11 @@ using namespace apiexec;
 struct StreamHandle {
     std::unique_ptr<ExecutionEngine<JsonBatch>> engine;
 
-    // Cached result from the last fetch — shared across v1/v2_ts/v2_sc.
+    // Cached result from the last fetch — shared across v1/v2_ts/v2_sc/foreach.
     // Populated by ensure_fetched(). Cleared after consumption or on next fetch.
     bool has_cached_result = false;
-    std::string cached_json;
+    std::string cached_json;                      // full batch as JSON array
+    std::vector<std::string> cached_record_jsons; // per-record JSON strings
     int32_t cached_count = 0;
     int64_t cached_ts_ms = 0;
 };
@@ -43,12 +45,14 @@ static auto ensure_fetched(StreamHandle* h) -> int32_t {
         return static_cast<int32_t>(result.error);
     }
 
-    // Serialise records to JSON
+    // Serialise records to JSON — both as a full array and per-record strings
     nlohmann::json output = nlohmann::json::array();
+    h->cached_record_jsons.clear();
     int32_t total_records = 0;
     for (const auto& batch : result.records) {
         for (const auto& record : batch.records) {
             output.push_back(record);
+            h->cached_record_jsons.push_back(record.dump());
             ++total_records;
         }
     }
@@ -65,6 +69,7 @@ static auto ensure_fetched(StreamHandle* h) -> int32_t {
 static auto consume_cache(StreamHandle* h) -> void {
     h->has_cached_result = false;
     h->cached_json.clear();
+    h->cached_record_jsons.clear();
     h->cached_count = 0;
     h->cached_ts_ms = 0;
 }
@@ -225,18 +230,12 @@ extern "C" auto stream_foreach_v1(StreamHandle* handle,
         if (rc == STREAM_EXHAUSTED) return STREAM_OK;
         if (rc != STREAM_OK) return rc;
 
-        // Parse the cached JSON array and deliver records one by one
-        try {
-            auto arr = nlohmann::json::parse(handle->cached_json);
-            for (const auto& record : arr) {
-                std::string json_str = record.dump();
-                int32_t cb_rc = cb(json_str.c_str(),
-                                    static_cast<int32_t>(json_str.size()),
-                                    user_data);
-                if (cb_rc != STREAM_OK) return cb_rc;
-            }
-        } catch (...) {
-            return STREAM_ERROR_PARSE;
+        // Deliver pre-serialised per-record JSON strings (no re-parse)
+        for (const auto& json_str : handle->cached_record_jsons) {
+            int32_t cb_rc = cb(json_str.c_str(),
+                                static_cast<int32_t>(json_str.size()),
+                                user_data);
+            if (cb_rc != STREAM_OK) return cb_rc;
         }
 
         consume_cache(handle);
