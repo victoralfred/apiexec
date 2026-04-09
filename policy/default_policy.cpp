@@ -42,8 +42,7 @@ Duration DefaultPolicy::backoff(int retry_count) {
 }
 
 std::size_t DefaultPolicy::prefetch_depth() {
-    // M1: sequential only (0). Double-buffer (1) comes in M2.
-    return 0;
+    return config_.prefetch_depth_val;
 }
 
 } // namespace apiexec

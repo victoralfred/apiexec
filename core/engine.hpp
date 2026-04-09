@@ -8,14 +8,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace apiexec {
 
-// Batch result from a single fetch cycle.
 template <typename T>
 struct FetchResult {
     StreamErrorCode error = StreamErrorCode::OK;
@@ -25,30 +26,21 @@ struct FetchResult {
 // ---------------------------------------------------------------------------
 // ExecutionEngine<T>
 //
-// Core data plane. Combines the Strategy pattern with the Template Method
-// pattern:
+// Strategy slots (injected at construction):
+//   - VendorAdapter<T>   : API-specific request/response behaviour
+//   - ExecutionPolicy    : backoff, window sizing, retry limits
+//   - ITransport         : HTTP execution (mockable for unit tests)
 //
-//   Strategy slots (injected at construction):
-//     - VendorAdapter<T>   : API-specific request/response behaviour
-//     - ExecutionPolicy    : backoff, window sizing, retry limits
-//     - ITransport         : HTTP execution (mockable for unit tests)
+// Template method (fetch_one): invariant sequence of
+//   check → build → execute → handle_error → parse → advance → adjust → yield
 //
-//   Template method (next_batch):
-//     The invariant sequence is:
-//       1. check_preconditions  — cancel / exhaustion guard
-//       2. build_request        — delegates to VendorAdapter<T>
-//       3. execute_transport    — delegates to ITransport
-//       4. handle_error         — retry / fail decisions via Policy + Adapter
-//       5. parse_response       — delegates to VendorAdapter<T>
-//       6. advance_cursor       — delegates to VendorAdapter<T>
-//       7. adjust_policy        — delegates to ExecutionPolicy
-//       8. yield                — return parsed batch to consumer
+// Double-buffer prefetch: when prefetch_depth >= 1, the engine kicks off the
+// next fetch on a background thread after yielding a result. The next
+// next_batch() call collects the prefetched result. Overlaps network I/O
+// with the caller's processing of the current batch.
 //
-//   Each step is a named private method. The loop structure is fixed;
-//   the behaviour at each step is determined entirely by the strategies.
-//
-// Threading model: single-consumer. next_batch() must not be called
-// concurrently. cancel() is safe to call from any thread.
+// Threading: single-consumer. next_batch() must not be called concurrently.
+// cancel() is safe from any thread.
 // ---------------------------------------------------------------------------
 template <typename T>
 class ExecutionEngine {
@@ -62,21 +54,124 @@ public:
         , transport_(std::move(transport))
         , cursor_(std::move(initial_cursor))
         , cancel_flag_(false)
-    {}
-
-    // Is there more data to fetch?
-    bool has_next() const {
-        return !cursor_.exhausted && !cancel_flag_.load(std::memory_order_relaxed);
+        , prefetch_enabled_(policy_->prefetch_depth() >= 1)
+        , stream_done_(cursor_.exhausted)
+    {
+        if (prefetch_enabled_ && !stream_done_) {
+            start_prefetch();
+        }
     }
 
-    // Template method: fetch the next batch of records.
-    // Drives the invariant sequence, delegating each variable step
-    // to the injected strategies.
+    ~ExecutionEngine() {
+        cancel();
+        join_prefetch();
+    }
+
+    ExecutionEngine(const ExecutionEngine&) = delete;
+    ExecutionEngine& operator=(const ExecutionEngine&) = delete;
+
+    bool has_next() const {
+        // If a prefetch is in flight, there's a result to collect
+        if (prefetch_in_flight_) return true;
+        return !stream_done_.load(std::memory_order_acquire)
+            && !cancel_flag_.load(std::memory_order_relaxed);
+    }
+
     FetchResult<T> next_batch() {
+        if (prefetch_enabled_) {
+            return next_batch_prefetch();
+        }
+        return fetch_one();
+    }
+
+    void cancel() {
+        cancel_flag_.store(true, std::memory_order_relaxed);
+        stream_done_.store(true, std::memory_order_release);
+    }
+
+    const Cursor& cursor() const { return cursor_; }
+
+    void set_sleep_fn(std::function<void(Duration)> fn) { sleep_fn_ = std::move(fn); }
+
+private:
+    enum class LoopSignal { PROCEED, RETRY, TERMINAL };
+
+    struct ErrorAction {
+        LoopSignal signal;
+        StreamErrorCode error;
+    };
+
+    // --- Prefetch mode ---
+
+    FetchResult<T> next_batch_prefetch() {
+        // If a prefetch is in flight, always collect its result first
+        if (prefetch_in_flight_) {
+            FetchResult<T> result = collect_prefetch();
+            prefetch_in_flight_ = false;
+
+            // If this result is successful and there's more data, start next prefetch
+            if (result.error == StreamErrorCode::OK && !cursor_.exhausted) {
+                start_prefetch();
+            } else {
+                stream_done_.store(true, std::memory_order_release);
+            }
+
+            return result;
+        }
+
+        // No prefetch in flight and stream is done
+        FetchResult<T> r;
+        r.error = cancel_flag_.load() ? StreamErrorCode::CANCELLED
+                                      : StreamErrorCode::EXHAUSTED;
+        return r;
+    }
+
+    void start_prefetch() {
+        join_prefetch();
+
+        {
+            std::lock_guard<std::mutex> lock(prefetch_mutex_);
+            prefetch_ready_ = false;
+        }
+
+        prefetch_in_flight_ = true;
+        prefetch_thread_ = std::thread([this] {
+            FetchResult<T> result = fetch_one();
+            {
+                std::lock_guard<std::mutex> lock(prefetch_mutex_);
+                prefetch_result_ = std::move(result);
+                prefetch_ready_ = true;
+            }
+            prefetch_cv_.notify_one();
+        });
+    }
+
+    FetchResult<T> collect_prefetch() {
+        std::unique_lock<std::mutex> lock(prefetch_mutex_);
+        prefetch_cv_.wait(lock, [this] { return prefetch_ready_; });
+        return std::move(prefetch_result_);
+    }
+
+    void join_prefetch() {
+        if (prefetch_thread_.joinable()) {
+            prefetch_thread_.join();
+        }
+    }
+
+    // --- Template method: single fetch cycle ---
+
+    FetchResult<T> fetch_one() {
         FetchResult<T> result;
 
-        // Step 1: check preconditions
-        if (!check_preconditions(result)) return result;
+        if (cursor_.exhausted) {
+            result.error = StreamErrorCode::EXHAUSTED;
+            stream_done_.store(true, std::memory_order_release);
+            return result;
+        }
+        if (is_cancelled()) {
+            result.error = StreamErrorCode::CANCELLED;
+            return result;
+        }
 
         int retry_count = 0;
         const int max_retries = policy_->max_retries();
@@ -87,17 +182,13 @@ public:
                 return result;
             }
 
-            // Step 2: build request (adapter strategy)
-            Request req = build_request();
+            Request req = adapter_->build_request(cursor_);
+            Response resp = transport_->execute(req, cancel_flag_);
 
-            // Step 3: execute transport (transport strategy)
-            Response resp = execute_transport(req);
-
-            // Step 4: handle errors (policy + adapter strategies)
             ErrorAction action = handle_error(resp, retry_count, max_retries);
             switch (action.signal) {
                 case LoopSignal::PROCEED:
-                    break;  // fall through to parse
+                    break;
                 case LoopSignal::RETRY:
                     continue;
                 case LoopSignal::TERMINAL:
@@ -105,78 +196,28 @@ public:
                     return result;
             }
 
-            // Step 5: parse response (adapter strategy)
             T parsed;
-            if (!parse_response(resp, parsed)) {
-                // Parse failure does not trigger window shrink — the server
-                // responded successfully; the issue is data format, not load.
+            if (!adapter_->parse_response(resp, parsed)) {
                 result.error = StreamErrorCode::PARSE;
                 return result;
             }
 
-            // Step 6: advance cursor (adapter strategy)
-            advance_cursor(resp);
+            cursor_ = adapter_->next_cursor(cursor_, resp);
+            policy_->adjust(cursor_, true);
 
-            // Step 7: adjust policy on success (policy strategy)
-            adjust_policy(true);
+            if (cursor_.exhausted) {
+                stream_done_.store(true, std::memory_order_release);
+            }
 
-            // Step 8: yield to consumer
             result.records.push_back(std::move(parsed));
             result.error = StreamErrorCode::OK;
             return result;
         }
     }
 
-    // Cancel the stream. Safe to call from any thread.
-    void cancel() {
-        cancel_flag_.store(true, std::memory_order_relaxed);
-    }
+    // --- Error handling ---
 
-    // Access the current cursor (for observability).
-    const Cursor& cursor() const { return cursor_; }
-
-    // Inject a sleep function for testing (avoids real delays).
-    void set_sleep_fn(std::function<void(Duration)> fn) { sleep_fn_ = std::move(fn); }
-
-private:
-    // Private loop control — never exposed to callers.
-    enum class LoopSignal { PROCEED, RETRY, TERMINAL };
-
-    struct ErrorAction {
-        LoopSignal signal;
-        StreamErrorCode error;  // only meaningful when signal == TERMINAL
-    };
-
-    // --- Template method steps ---
-
-    // Step 1: Guard against exhaustion and cancellation.
-    bool check_preconditions(FetchResult<T>& result) {
-        if (cursor_.exhausted) {
-            result.error = StreamErrorCode::EXHAUSTED;
-            return false;
-        }
-        if (is_cancelled()) {
-            result.error = StreamErrorCode::CANCELLED;
-            return false;
-        }
-        return true;
-    }
-
-    // Step 2: Delegate request construction to the adapter strategy.
-    Request build_request() {
-        return adapter_->build_request(cursor_);
-    }
-
-    // Step 3: Delegate HTTP execution to the transport strategy.
-    Response execute_transport(const Request& req) {
-        return transport_->execute(req, cancel_flag_);
-    }
-
-    // Step 4: Classify the response and decide retry / fail / proceed.
-    // Policy adjustment for failure happens only on terminal errors (not
-    // per-retry), to avoid compounding window shrink across retries.
     ErrorAction handle_error(const Response& resp, int& retry_count, int max_retries) {
-        // Network error (status 0)
         if (resp.status_code == 0) {
             if (is_cancelled()) return {LoopSignal::TERMINAL, StreamErrorCode::CANCELLED};
             if (retry_count < max_retries) {
@@ -187,13 +228,11 @@ private:
             return {LoopSignal::TERMINAL, StreamErrorCode::NETWORK};
         }
 
-        // Client error (4xx non-429): fail immediately, adjust policy once
         if (resp.is_client_error()) {
-            adjust_policy(false);
+            policy_->adjust(cursor_, false);
             return {LoopSignal::TERMINAL, StreamErrorCode::CLIENT};
         }
 
-        // Retryable errors (429, 5xx): delegate to adapter + policy
         if (adapter_->is_retryable(resp)) {
             if (retry_count < max_retries) {
                 auto retry_after = adapter_->retry_after(resp);
@@ -206,30 +245,13 @@ private:
                 ++retry_count;
                 return {LoopSignal::RETRY, {}};
             }
-            // Terminal: all retries exhausted — adjust policy once
-            adjust_policy(false);
+            policy_->adjust(cursor_, false);
             auto code = resp.is_rate_limited() ? StreamErrorCode::RATE_LIMIT
                                                : StreamErrorCode::SERVER;
             return {LoopSignal::TERMINAL, code};
         }
 
-        // Success
         return {LoopSignal::PROCEED, {}};
-    }
-
-    // Step 5: Delegate response parsing to the adapter strategy.
-    bool parse_response(const Response& resp, T& out) {
-        return adapter_->parse_response(resp, out);
-    }
-
-    // Step 6: Delegate cursor advancement to the adapter strategy.
-    void advance_cursor(const Response& resp) {
-        cursor_ = adapter_->next_cursor(cursor_, resp);
-    }
-
-    // Step 7: Delegate policy adjustment to the policy strategy.
-    void adjust_policy(bool success) {
-        policy_->adjust(cursor_, success);
     }
 
     // --- Utilities ---
@@ -255,6 +277,16 @@ private:
     Cursor cursor_;
     std::atomic<bool> cancel_flag_;
     std::function<void(Duration)> sleep_fn_;
+
+    // --- Prefetch ---
+    bool prefetch_enabled_;
+    bool prefetch_in_flight_ = false;
+    std::atomic<bool> stream_done_;
+    std::thread prefetch_thread_;
+    std::mutex prefetch_mutex_;
+    std::condition_variable prefetch_cv_;
+    bool prefetch_ready_ = false;
+    FetchResult<T> prefetch_result_;
 };
 
 } // namespace apiexec

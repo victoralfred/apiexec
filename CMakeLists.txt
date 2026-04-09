@@ -35,8 +35,9 @@ target_link_libraries(apiexec_transport PUBLIC apiexec_core PRIVATE CURL::libcur
 # ---------------------------------------------------------------------------
 add_library(apiexec_policy
     policy/default_policy.cpp
+    policy/default_policy_json.cpp
 )
-target_link_libraries(apiexec_policy PUBLIC apiexec_core)
+target_link_libraries(apiexec_policy PUBLIC apiexec_core PRIVATE nlohmann_json::nlohmann_json)
 
 # ---------------------------------------------------------------------------
 # Layer 4: adapters/ — vendor adapters + registry. Depends on core/ only
@@ -99,6 +100,20 @@ add_executable(engine_test ../tests/unit/engine_test.cpp)
 target_link_libraries(engine_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
 add_test(NAME engine_test COMMAND engine_test)
 
+# policy_json_test: policy/ + nlohmann/json
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/policy_json_test.cpp")
+    add_executable(policy_json_test ../tests/unit/policy_json_test.cpp)
+    target_link_libraries(policy_json_test PRIVATE apiexec_policy nlohmann_json::nlohmann_json)
+    add_test(NAME policy_json_test COMMAND policy_json_test)
+endif()
+
+# prefetch_test: core/ + policy/ (mock transport, no curl needed)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/prefetch_test.cpp")
+    add_executable(prefetch_test ../tests/unit/prefetch_test.cpp)
+    target_link_libraries(prefetch_test PRIVATE apiexec_policy)
+    add_test(NAME prefetch_test COMMAND prefetch_test)
+endif()
+
 # Integration tests
 set(MOCK_SERVER_SRC ../tests/integration/mock_server/mock_server.cpp)
 
@@ -107,4 +122,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/e2e_test.cpp")
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
     target_link_libraries(e2e_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
     add_test(NAME e2e_test COMMAND e2e_test)
+endif()
+
+# 429-storm integration test
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/rate_limit_test.cpp")
+    add_executable(rate_limit_test ../tests/integration/rate_limit_test.cpp ${MOCK_SERVER_SRC})
+    target_include_directories(rate_limit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
+    target_link_libraries(rate_limit_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME rate_limit_test COMMAND rate_limit_test)
+endif()
+
+# Prefetch throughput benchmark
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/prefetch_bench.cpp")
+    add_executable(prefetch_bench ../tests/integration/prefetch_bench.cpp ${MOCK_SERVER_SRC})
+    target_include_directories(prefetch_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
+    target_link_libraries(prefetch_bench PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME prefetch_bench COMMAND prefetch_bench)
 endif()
