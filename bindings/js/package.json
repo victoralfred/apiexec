@@ -1,0 +1,9 @@
+{
+  "name": "apiexec",
+  "version": "0.1.0",
+  "description": "Node.js bindings for apiexec streaming execution engine",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node src/test.js"
+  }
+}
