@@ -1,11 +1,9 @@
 #include "generic_rest.hpp"
+#include "../core/limits.hpp"
 
 #include <stdexcept>
 
 namespace apiexec {
-
-constexpr size_t MAX_CONFIG_JSON_SIZE   = 65536;  // 64 KB
-constexpr int    MAX_RETRY_AFTER_SECS   = 3600;   // 1 hour
 
 GenericRestAdapter::GenericRestAdapter(Config cfg) : config_(std::move(cfg)) {}
 

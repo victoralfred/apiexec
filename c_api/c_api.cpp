@@ -2,6 +2,7 @@
 
 #include "../adapters/generic_rest.hpp"
 #include "../core/engine.hpp"
+#include "../core/limits.hpp"
 #include "../policy/default_policy.hpp"
 #include "../transport/curl_transport.hpp"
 
@@ -15,9 +16,13 @@ using namespace apiexec;
 
 struct StreamHandle {
     std::unique_ptr<ExecutionEngine<JsonBatch>> engine;
-    std::string last_json;   // cached serialised output for v2 functions
-    int32_t last_count = 0;  // record count from last fetch
-    int64_t last_ts_ms = 0;  // timestamp from last fetch (cursor start)
+
+    // Cached result from the last fetch — shared across v1/v2_ts/v2_sc.
+    // Populated by ensure_fetched(). Cleared after consumption or on next fetch.
+    bool has_cached_result = false;
+    std::string cached_json;
+    int32_t cached_count = 0;
+    int64_t cached_ts_ms = 0;
 };
 
 // --- Helpers ---
@@ -26,12 +31,55 @@ static auto is_null_handle(StreamHandle* h) -> bool {
     return h == nullptr || h->engine == nullptr;
 }
 
+// Fetch the next batch if no cached result is available.
+// Returns STREAM_OK if a cached result is ready, or an error code.
+static auto ensure_fetched(StreamHandle* h) -> int32_t {
+    if (h->has_cached_result) {
+        return STREAM_OK;
+    }
+
+    auto result = h->engine->next_batch();
+    if (result.error != StreamErrorCode::OK) {
+        return static_cast<int32_t>(result.error);
+    }
+
+    // Serialise records to JSON
+    nlohmann::json output = nlohmann::json::array();
+    int32_t total_records = 0;
+    for (const auto& batch : result.records) {
+        for (const auto& record : batch.records) {
+            output.push_back(record);
+            ++total_records;
+        }
+    }
+
+    h->cached_json = output.dump();
+    h->cached_count = total_records;
+    h->cached_ts_ms = h->engine->cursor().time_window_start;
+    h->has_cached_result = true;
+
+    return STREAM_OK;
+}
+
+// Mark cached result as consumed so the next call fetches a new batch.
+static auto consume_cache(StreamHandle* h) -> void {
+    h->has_cached_result = false;
+    h->cached_json.clear();
+    h->cached_count = 0;
+    h->cached_ts_ms = 0;
+}
+
 // --- Lifecycle ---
 
-extern "C" StreamHandle* stream_create(const char* adapter,
-                                       const char* config_json,
-                                       const char* policy_json) {
+extern "C" auto stream_create(const char* adapter,
+                               const char* config_json,
+                               const char* policy_json) -> StreamHandle* {
     if (adapter == nullptr || config_json == nullptr) {
+        return nullptr;
+    }
+
+    // Size check at the C boundary before constructing std::string
+    if (std::strlen(config_json) > MAX_CONFIG_JSON_SIZE) {
         return nullptr;
     }
 
@@ -39,8 +87,6 @@ extern "C" StreamHandle* stream_create(const char* adapter,
     std::string config(config_json);
 
     try {
-        // Currently only "generic_rest" is supported; adapter registry
-        // dispatch will be added in M4.
         if (adapter_name != "generic_rest") {
             return nullptr;
         }
@@ -50,6 +96,9 @@ extern "C" StreamHandle* stream_create(const char* adapter,
 
         std::unique_ptr<DefaultPolicy> policy;
         if (policy_json != nullptr && std::strlen(policy_json) > 0) {
+            if (std::strlen(policy_json) > MAX_CONFIG_JSON_SIZE) {
+                return nullptr;
+            }
             policy = std::make_unique<DefaultPolicy>(
                 DefaultPolicy::from_json(std::string(policy_json)));
         } else {
@@ -71,12 +120,11 @@ extern "C" StreamHandle* stream_create(const char* adapter,
         return handle;
 
     } catch (...) {
-        // No C++ exceptions propagate across the C boundary
         return nullptr;
     }
 }
 
-extern "C" void stream_destroy(StreamHandle* handle) {
+extern "C" auto stream_destroy(StreamHandle* handle) -> void {
     delete handle;
 }
 
@@ -86,6 +134,8 @@ extern "C" auto stream_has_next(StreamHandle* handle) -> int32_t {
     if (is_null_handle(handle)) {
         return STREAM_ERROR_INVALID_ARG;
     }
+    // If there's a cached result, there's data to read
+    if (handle->has_cached_result) return 1;
     return handle->engine->has_next() ? 1 : 0;
 }
 
@@ -102,37 +152,19 @@ extern "C" auto stream_next_batch_v1(StreamHandle* handle,
 
     *out_count = 0;
 
-    auto result = handle->engine->next_batch();
-    if (result.error != StreamErrorCode::OK) {
-        return static_cast<int32_t>(result.error);
+    int32_t rc = ensure_fetched(handle);
+    if (rc != STREAM_OK) return rc;
+
+    // Check buffer size (need size+1 for null terminator)
+    if (static_cast<int32_t>(handle->cached_json.size() + 1) > buf_len) {
+        return STREAM_ERROR_CLIENT;  // buffer too small; cache preserved for retry
     }
 
-    // Serialise records to JSON
-    nlohmann::json output = nlohmann::json::array();
-    int32_t total_records = 0;
-    for (const auto& batch : result.records) {
-        for (const auto& record : batch.records) {
-            output.push_back(record);
-            ++total_records;
-        }
-    }
+    std::memcpy(buf, handle->cached_json.data(), handle->cached_json.size());
+    static_cast<char*>(buf)[handle->cached_json.size()] = '\0';
+    *out_count = handle->cached_count;
 
-    std::string json_str = output.dump();
-
-    // Check buffer size
-    if (static_cast<int32_t>(json_str.size()) >= buf_len) {
-        return STREAM_ERROR_CLIENT;  // buffer too small
-    }
-
-    std::memcpy(buf, json_str.data(), json_str.size());
-    static_cast<char*>(buf)[json_str.size()] = '\0';
-    *out_count = total_records;
-
-    // Cache for v2 functions
-    handle->last_json = std::move(json_str);
-    handle->last_count = total_records;
-    handle->last_ts_ms = handle->engine->cursor().time_window_start;
-
+    consume_cache(handle);
     return STREAM_OK;
 }
 
@@ -142,24 +174,13 @@ extern "C" auto stream_next_v2_ts(StreamHandle* handle,
         return STREAM_ERROR_INVALID_ARG;
     }
 
-    auto result = handle->engine->next_batch();
-    if (result.error != StreamErrorCode::OK) {
-        return static_cast<int32_t>(result.error);
-    }
+    int32_t rc = ensure_fetched(handle);
+    if (rc != STREAM_OK) return rc;
 
-    // Return the cursor's time_window_start as the timestamp
-    *out_ts_ms = handle->engine->cursor().time_window_start;
-    handle->last_ts_ms = *out_ts_ms;
+    // Returns cursor time_window_start (0 for cursor-based adapters without time windows)
+    *out_ts_ms = handle->cached_ts_ms;
 
-    // Cache serialised JSON for a potential follow-up v2_sc call
-    nlohmann::json output = nlohmann::json::array();
-    for (const auto& batch : result.records) {
-        for (const auto& record : batch.records) {
-            output.push_back(record);
-        }
-    }
-    handle->last_json = output.dump();
-
+    // Do NOT consume cache — allow a follow-up stream_next_v2_sc to read the same batch
     return STREAM_OK;
 }
 
@@ -173,31 +194,22 @@ extern "C" auto stream_next_v2_sc(StreamHandle* handle,
         return STREAM_ERROR_INVALID_ARG;
     }
 
-    auto result = handle->engine->next_batch();
-    if (result.error != StreamErrorCode::OK) {
-        return static_cast<int32_t>(result.error);
+    int32_t rc = ensure_fetched(handle);
+    if (rc != STREAM_OK) return rc;
+
+    if (static_cast<int32_t>(handle->cached_json.size() + 1) > buf_len) {
+        return STREAM_ERROR_CLIENT;  // buffer too small; cache preserved for retry
     }
 
-    // Serialise records to JSON string
-    nlohmann::json output = nlohmann::json::array();
-    for (const auto& batch : result.records) {
-        for (const auto& record : batch.records) {
-            output.push_back(record);
-        }
-    }
-    std::string json_str = output.dump();
+    std::memcpy(out_buf, handle->cached_json.c_str(), handle->cached_json.size() + 1);
 
-    if (static_cast<int32_t>(json_str.size() + 1) > buf_len) {
-        return STREAM_ERROR_CLIENT;  // buffer too small
-    }
-
-    std::memcpy(out_buf, json_str.c_str(), json_str.size() + 1);
+    consume_cache(handle);
     return STREAM_OK;
 }
 
 // --- Cancellation ---
 
-extern "C" void stream_cancel(StreamHandle* handle) {
+extern "C" auto stream_cancel(StreamHandle* handle) -> void {
     if (handle != nullptr && handle->engine != nullptr) {
         handle->engine->cancel();
     }

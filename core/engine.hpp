@@ -3,6 +3,7 @@
 #include "cursor.hpp"
 #include "execution_policy.hpp"
 #include "itransport.hpp"
+#include "limits.hpp"
 #include "stream_error.hpp"
 #include "vendor_adapter.hpp"
 
@@ -16,9 +17,6 @@
 #include <vector>
 
 namespace apiexec {
-
-constexpr int MAX_RETRY_AFTER_SECS = 3600;  // 1 hour cap on Retry-After
-constexpr int MS_PER_SECOND        = 1000;
 
 template <typename T>
 struct FetchResult {
@@ -281,7 +279,7 @@ private:
 
     // --- Prefetch ---
     bool prefetch_enabled_;
-    bool prefetch_in_flight_ = false;
+    std::atomic<bool> prefetch_in_flight_{false};
     std::atomic<bool> stream_done_;
     std::thread prefetch_thread_;
     std::mutex prefetch_mutex_;
