@@ -140,16 +140,22 @@ private:
             FetchResult<T> result = collect_prefetch();
             prefetch_in_flight_ = false;
 
+            // Read cursor_.exhausted under lock to avoid race with prefetch thread
+            bool exhausted;
+            {
+                std::lock_guard<std::mutex> lock(cursor_mutex_);
+                exhausted = cursor_.exhausted;
+            }
+
             if (result.error == StreamErrorCode::OK) {
                 prefetch_consecutive_failures_ = 0;
-                if (!cursor_.exhausted) {
+                if (!exhausted) {
                     start_prefetch();
                 } else {
                     stream_done_.store(true, std::memory_order_release);
                 }
-            } else if (!cursor_.exhausted && !is_cancelled()
+            } else if (!exhausted && !is_cancelled()
                        && prefetch_consecutive_failures_ < kMaxPrefetchRetries) {
-                // Transient error — auto-retry one prefetch
                 ++prefetch_consecutive_failures_;
                 start_prefetch();
             } else {
@@ -219,13 +225,14 @@ private:
             return result;
         }
         if (policy_->budget_exceeded()) {
+            stream_done_.store(true, std::memory_order_release);
             result.error = StreamErrorCode::BUDGET_EXHAUSTED;
             return result;
         }
 
         int retry_count = 0;
         const int max_retries = policy_->max_retries();
-        saw_rate_limit_this_cycle_ = false;
+        bool saw_rate_limit = false;
 
         while (true) {
             if (is_cancelled()) {
@@ -236,7 +243,7 @@ private:
             Request req = adapter_->build_request(cursor_);
             Response resp = transport_->execute(req, cancel_flag_);
 
-            ErrorAction action = handle_error(resp, retry_count, max_retries);
+            ErrorAction action = handle_error(resp, retry_count, max_retries, saw_rate_limit);
             switch (action.signal) {
                 case LoopSignal::PROCEED:
                     break;
@@ -256,12 +263,10 @@ private:
             {
                 std::lock_guard<std::mutex> lock(cursor_mutex_);
                 cursor_ = adapter_->next_cursor(cursor_, resp);
-            }
-
-            // Only grow the window if no rate-limit pressure was seen this cycle.
-            if (!saw_rate_limit_this_cycle_) {
-                std::lock_guard<std::mutex> lock(cursor_mutex_);
-                policy_->adjust(cursor_, true);
+                // Only grow the window if no rate-limit pressure was seen this cycle.
+                if (!saw_rate_limit) {
+                    policy_->adjust(cursor_, true);
+                }
             }
 
             // Record cost if the adapter provides it
@@ -270,7 +275,12 @@ private:
                 policy_->record_cost(cursor_, cost.value());
             }
 
-            if (cursor_.exhausted) {
+            bool exhausted;
+            {
+                std::lock_guard<std::mutex> lock(cursor_mutex_);
+                exhausted = cursor_.exhausted;
+            }
+            if (exhausted) {
                 stream_done_.store(true, std::memory_order_release);
             }
 
@@ -282,7 +292,8 @@ private:
 
     // --- Error handling ---
 
-    auto handle_error(const Response& resp, int& retry_count, int max_retries) -> ErrorAction {
+    auto handle_error(const Response& resp, int& retry_count, int max_retries,
+                      bool& saw_rate_limit) -> ErrorAction {
         // Network error (status 0)
         if (resp.status_code == 0) {
             if (is_cancelled()) return {LoopSignal::TERMINAL, StreamErrorCode::CANCELLED};
@@ -304,12 +315,12 @@ private:
         if (adapter_->is_retryable(resp)) {
             // 429: signal rate-limit pressure on first encounter this cycle.
             // This shrinks the window immediately so the next request scope is smaller.
-            if (resp.is_rate_limited() && !saw_rate_limit_this_cycle_) {
+            if (resp.is_rate_limited() && !saw_rate_limit) {
                 {
                     std::lock_guard<std::mutex> lock(cursor_mutex_);
                     policy_->adjust(cursor_, false);
                 }
-                saw_rate_limit_this_cycle_ = true;
+                saw_rate_limit = true;
             }
 
             if (retry_count < max_retries) {
@@ -358,9 +369,6 @@ private:
     Cursor cursor_;
     std::atomic<bool> cancel_flag_;
     std::function<void(Duration)> sleep_fn_;
-
-    // --- Rate-limit tracking ---
-    bool saw_rate_limit_this_cycle_ = false;
 
     // --- Cursor synchronisation ---
     mutable std::mutex cursor_mutex_;

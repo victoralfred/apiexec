@@ -78,7 +78,11 @@ extern "C" auto stream_create(const char* adapter,
         return nullptr;
     }
 
-    // Size check at the C boundary before constructing std::string
+    // Length caps at the C boundary before constructing std::string
+    constexpr size_t MAX_ADAPTER_NAME_LEN = 64;
+    if (std::strlen(adapter) > MAX_ADAPTER_NAME_LEN) {
+        return nullptr;
+    }
     if (std::strlen(config_json) > MAX_CONFIG_JSON_SIZE) {
         return nullptr;
     }
