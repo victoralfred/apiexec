@@ -4,6 +4,8 @@
 #include "execution_policy.hpp"
 #include "itransport.hpp"
 #include "limits.hpp"
+#include "logging.hpp"
+#include "metrics.hpp"
 #include "stream_error.hpp"
 #include "vendor_adapter.hpp"
 
@@ -95,6 +97,17 @@ public:
     }
 
     auto set_sleep_fn(std::function<void(Duration)> fn) -> void { sleep_fn_ = std::move(fn); }
+
+    // --- Metrics ---
+
+    auto metrics() const -> const Metrics& { return metrics_; }
+    auto metrics_snapshot() const -> MetricsSnapshot { return metrics_.snapshot(); }
+
+    // Set a callback invoked after each successful fetch with a metrics snapshot.
+    auto set_metrics_callback(MetricsCallback cb) -> void { metrics_cb_ = std::move(cb); }
+
+    // Set a structured log callback. API keys never appear in log output.
+    auto set_log_callback(LogCallback cb) -> void { log_cb_ = std::move(cb); }
 
     // --- Record-level streaming interface ---
 
@@ -242,6 +255,7 @@ private:
 
             Request req = adapter_->build_request(cursor_);
             Response resp = transport_->execute(req, cancel_flag_);
+            metrics_.inc_request();
 
             ErrorAction action = handle_error(resp, retry_count, max_retries, saw_rate_limit);
             switch (action.signal) {
@@ -256,6 +270,8 @@ private:
 
             T parsed;
             if (!adapter_->parse_response(resp, parsed)) {
+                metrics_.inc_error_parse();
+                emit_log(LogLevel::ERROR, "response parse failure", resp.status_code);
                 result.error = StreamErrorCode::PARSE;
                 return result;
             }
@@ -279,12 +295,22 @@ private:
             {
                 std::lock_guard<std::mutex> lock(cursor_mutex_);
                 exhausted = cursor_.exhausted;
+                metrics_.set_window_size_ms(static_cast<double>(
+                    cursor_.time_window_end - cursor_.time_window_start));
             }
             if (exhausted) {
                 stream_done_.store(true, std::memory_order_release);
             }
 
+            // Metrics: success + records
+            metrics_.inc_success();
             result.records.push_back(std::move(parsed));
+            metrics_.add_records(1);
+
+            if (metrics_cb_) {
+                metrics_cb_(metrics_.snapshot());
+            }
+
             result.error = StreamErrorCode::OK;
             return result;
         }
@@ -298,16 +324,20 @@ private:
         if (resp.status_code == 0) {
             if (is_cancelled()) return {LoopSignal::TERMINAL, StreamErrorCode::CANCELLED};
             if (retry_count < max_retries) {
+                metrics_.inc_retry();
                 sleep_for(policy_->backoff(retry_count));
                 ++retry_count;
                 return {LoopSignal::RETRY, {}};
             }
+            metrics_.inc_error_network();
+            emit_log(LogLevel::ERROR, "network error, retries exhausted", 0, retry_count);
             return {LoopSignal::TERMINAL, StreamErrorCode::NETWORK};
         }
 
-        // 4xx non-429: fail immediately. No window adjustment — auth/validation
-        // errors are not load signals.
+        // 4xx non-429: fail immediately.
         if (resp.is_client_error()) {
+            metrics_.inc_error_client();
+            emit_log(LogLevel::WARN, "client error", resp.status_code);
             return {LoopSignal::TERMINAL, StreamErrorCode::CLIENT};
         }
 
@@ -324,6 +354,7 @@ private:
             }
 
             if (retry_count < max_retries) {
+                metrics_.inc_retry();
                 auto retry_after = adapter_->retry_after(resp);
                 if (retry_after.has_value() && retry_after.value() > 0) {
                     int clamped = std::min(retry_after.value(), MAX_RETRY_AFTER_SECS);
@@ -335,9 +366,14 @@ private:
                 return {LoopSignal::RETRY, {}};
             }
 
-            // Terminal: retries exhausted. No additional adjust — 429 already
-            // adjusted on first encounter; 5xx is an infrastructure issue,
-            // not a load signal.
+            // Terminal: retries exhausted.
+            if (resp.is_rate_limited()) {
+                metrics_.inc_error_rate_limit();
+                emit_log(LogLevel::ERROR, "rate limit, retries exhausted", resp.status_code, retry_count);
+            } else {
+                metrics_.inc_error_server();
+                emit_log(LogLevel::ERROR, "server error, retries exhausted", resp.status_code, retry_count);
+            }
             auto code = resp.is_rate_limited() ? StreamErrorCode::RATE_LIMIT
                                                : StreamErrorCode::SERVER;
             return {LoopSignal::TERMINAL, code};
@@ -352,6 +388,24 @@ private:
         return cancel_flag_.load(std::memory_order_relaxed);
     }
 
+    auto emit_log(LogLevel level, const std::string& msg,
+                  int32_t http_status = 0, int retries = 0) -> void {
+        if (!log_cb_ || !should_log(level)) return;
+        LogEntry entry;
+        entry.level = level;
+        entry.message = msg;
+        entry.http_status = http_status;
+        entry.retry_count = retries;
+        {
+            std::lock_guard<std::mutex> lock(cursor_mutex_);
+            entry.cursor_start_ms = cursor_.time_window_start;
+            entry.cursor_end_ms = cursor_.time_window_end;
+            entry.page_token_redacted = redact_token(cursor_.page_token);
+            entry.cursor_exhausted = cursor_.exhausted;
+        }
+        log_cb_(entry);
+    }
+
     auto sleep_for(Duration d) -> void {
         if (sleep_fn_) {
             sleep_fn_(d);
@@ -364,6 +418,11 @@ private:
     std::unique_ptr<VendorAdapter<T>> adapter_;
     std::unique_ptr<ExecutionPolicy>  policy_;
     std::unique_ptr<ITransport>       transport_;
+
+    // --- Metrics + Logging ---
+    Metrics metrics_;
+    MetricsCallback metrics_cb_;
+    LogCallback log_cb_;
 
     // --- State ---
     Cursor cursor_;

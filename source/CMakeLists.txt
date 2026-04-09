@@ -141,6 +141,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/policy_json_test.cpp")
     add_test(NAME policy_json_test COMMAND policy_json_test)
 endif()
 
+# metrics_test: core/ + policy/
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/metrics_test.cpp")
+    add_executable(metrics_test ../tests/unit/metrics_test.cpp)
+    target_link_libraries(metrics_test PRIVATE apiexec_policy)
+    add_test(NAME metrics_test COMMAND metrics_test)
+endif()
+
 # prefetch_test: core/ + policy/ (mock transport, no curl needed)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/prefetch_test.cpp")
     add_executable(prefetch_test ../tests/unit/prefetch_test.cpp)
@@ -193,6 +200,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/rate_limit_test.cpp"
     target_include_directories(rate_limit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
     target_link_libraries(rate_limit_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
     add_test(NAME rate_limit_test COMMAND rate_limit_test)
+endif()
+
+# Soak test (configurable duration; default 10s for CI, 86400 for full soak)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/soak/soak_test.cpp")
+    add_executable(soak_test ../tests/soak/soak_test.cpp)
+    target_link_libraries(soak_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME soak_test COMMAND soak_test 10)
 endif()
 
 # Prefetch throughput benchmark

@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev nlohmann-json3-dev valgrind
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install curl nlohmann-json
+
+      - name: Configure
+        run: cmake -S source -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: cd build && ctest --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev nlohmann-json3-dev
+
+      - name: Configure (ASAN + UBSAN)
+        run: cmake -S source -B build_asan -DSANITIZE=ON
+
+      - name: Build
+        run: cmake --build build_asan
+
+      - name: Test under ASAN + UBSAN
+        run: cd build_asan && ctest --output-on-failure
+
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev nlohmann-json3-dev valgrind
+
+      - name: Configure
+        run: cmake -S source -B build
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Valgrind (unit tests)
+        run: |
+          cd build
+          for test in cursor_test policy_test retry_test exhaustion_test \
+                      engine_test policy_json_test streaming_test \
+                      cost_hooks_test metrics_test c_api_test; do
+            echo "--- valgrind: $test ---"
+            valgrind --leak-check=full --error-exitcode=1 ./$test
+          done
+
+  go-binding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev nlohmann-json3-dev
+
+      - name: Build C library
+        run: cmake -S source -B build && cmake --build build
+
+      - name: Go test with race detector
+        run: cd bindings/go && CGO_ENABLED=1 go test -v -count=1 -race ./apiexec/...
