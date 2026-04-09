@@ -46,6 +46,8 @@ target_link_libraries(apiexec_policy PUBLIC apiexec_core PRIVATE nlohmann_json::
 # ---------------------------------------------------------------------------
 add_library(apiexec_adapters
     adapters/generic_rest.cpp
+    adapters/datadog_metrics.cpp
+    adapters/openai.cpp
     adapters/registry.cpp
 )
 target_link_libraries(apiexec_adapters
@@ -62,7 +64,8 @@ add_library(apiexec_capi
 target_include_directories(apiexec_capi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api)
 target_link_libraries(apiexec_capi
     PUBLIC apiexec_core
-    PRIVATE apiexec_transport apiexec_policy apiexec_adapters
+    PRIVATE apiexec_transport apiexec_policy
+            -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
             nlohmann_json::nlohmann_json
 )
 
@@ -70,7 +73,8 @@ target_link_libraries(apiexec_capi
 add_library(apiexec_shared SHARED c_api/c_api.cpp)
 target_include_directories(apiexec_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api)
 target_link_libraries(apiexec_shared
-    PRIVATE apiexec_transport apiexec_policy apiexec_adapters
+    PRIVATE apiexec_transport apiexec_policy
+            -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
             nlohmann_json::nlohmann_json CURL::libcurl
 )
 set_target_properties(apiexec_shared PROPERTIES
@@ -82,12 +86,14 @@ set_target_properties(apiexec_shared PROPERTIES
 # ---------------------------------------------------------------------------
 # Convenience target: links all layers for binaries that need everything.
 # ---------------------------------------------------------------------------
+# Force --whole-archive on apiexec_adapters so static self-registration
+# initialisers are not stripped by the linker.
 add_library(apiexec_all INTERFACE)
 target_link_libraries(apiexec_all INTERFACE
     apiexec_core
     apiexec_transport
     apiexec_policy
-    apiexec_adapters
+    -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
     apiexec_capi
 )
 
@@ -171,6 +177,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/e2e_test.cpp")
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
     target_link_libraries(e2e_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
     add_test(NAME e2e_test COMMAND e2e_test)
+endif()
+
+# Multi-adapter integration test (10k records per adapter)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration/multi_adapter_test.cpp")
+    add_executable(multi_adapter_test ../tests/integration/multi_adapter_test.cpp ${MOCK_SERVER_SRC})
+    target_include_directories(multi_adapter_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests/integration)
+    target_link_libraries(multi_adapter_test PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+    add_test(NAME multi_adapter_test COMMAND multi_adapter_test)
 endif()
 
 # 429-storm integration test

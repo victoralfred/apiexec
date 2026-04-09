@@ -1,9 +1,20 @@
 #include "generic_rest.hpp"
+#include "registry.hpp"
 #include "../core/limits.hpp"
 
 #include <stdexcept>
 
 namespace apiexec {
+
+// Self-register with the adapter registry at static init time.
+APIEXEC_REGISTER_ADAPTER(generic_rest, [](const std::string& config_json) -> void* {
+    try {
+        auto cfg = GenericRestAdapter::from_json(config_json);
+        return new GenericRestAdapter(cfg);
+    } catch (...) {
+        return nullptr;
+    }
+});
 
 GenericRestAdapter::GenericRestAdapter(Config cfg) : config_(std::move(cfg)) {}
 

@@ -16,6 +16,10 @@ auto Registry::find(const std::string& name) const -> AdapterFactory {
     return it != factories_.end() ? it->second : nullptr;
 }
 
+auto Registry::has(const std::string& name) const -> bool {
+    return factories_.find(name) != factories_.end();
+}
+
 auto Registry::adapter_names() const -> std::vector<std::string> {
     std::vector<std::string> names;
     names.reserve(factories_.size());

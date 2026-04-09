@@ -1,6 +1,7 @@
 #include "c_api.h"
 
 #include "../adapters/generic_rest.hpp"
+#include "../adapters/registry.hpp"
 #include "../core/engine.hpp"
 #include "../core/limits.hpp"
 #include "../policy/default_policy.hpp"
@@ -96,12 +97,21 @@ extern "C" auto stream_create(const char* adapter,
     std::string config(config_json);
 
     try {
-        if (adapter_name != "generic_rest") {
+        // Dispatch through the adapter registry
+        auto factory = Registry::instance().find(adapter_name);
+        if (!factory) {
             return nullptr;
         }
 
-        auto adapter_cfg = GenericRestAdapter::from_json(config);
-        auto adapter_ptr = std::make_unique<GenericRestAdapter>(adapter_cfg);
+        auto* raw_adapter = factory(config);
+        if (!raw_adapter) {
+            return nullptr;
+        }
+
+        // The factory returns a VendorAdapter<JsonBatch>* as void*.
+        // Transfer ownership to a unique_ptr.
+        auto adapter_ptr = std::unique_ptr<VendorAdapter<JsonBatch>>(
+            static_cast<VendorAdapter<JsonBatch>*>(raw_adapter));
 
         std::unique_ptr<DefaultPolicy> policy;
         if (policy_json != nullptr && std::strlen(policy_json) > 0) {
