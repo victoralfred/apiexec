@@ -36,6 +36,7 @@ extern "C" {
 #define STREAM_ERROR_NETWORK      -5
 #define STREAM_ERROR_CANCELLED    -6
 #define STREAM_ERROR_INVALID_ARG  -7
+#define STREAM_ERROR_BUDGET_EXHAUSTED -8
 
 /* --- Opaque handle --- */
 
@@ -120,6 +121,47 @@ int32_t stream_next_v2_ts(StreamHandle* handle,
 int32_t stream_next_v2_sc(StreamHandle* handle,
                           char* out_buf,
                           int32_t buf_len);
+
+/* --- Cancellation --- */
+
+/* --- Record-level streaming --- */
+
+/*
+ * Callback type for per-record streaming.
+ * json_record: null-terminated JSON string for one record.
+ * json_len:    length of json_record (excluding null terminator).
+ * user_data:   opaque pointer passed through from stream_foreach_v1.
+ *
+ * Return STREAM_OK to continue, or any negative error code to stop.
+ */
+typedef int32_t (*stream_record_cb)(const char* json_record,
+                                     int32_t json_len,
+                                     void* user_data);
+
+/*
+ * Iterate all records in the stream, calling cb for each one.
+ * Returns STREAM_OK when the stream is exhausted, or any error code
+ * from the engine or the callback.
+ */
+int32_t stream_foreach_v1(StreamHandle* handle,
+                          stream_record_cb cb,
+                          void* user_data);
+
+/* --- Cost / Budget --- */
+
+/*
+ * Query cost and budget information for the stream.
+ *
+ * out_remaining_budget: On success, set to the remaining budget (or -1.0 if
+ *                       no budget constraint is active). May be NULL.
+ * out_budget_exceeded:  On success, set to 1 if budget is exceeded, 0 otherwise.
+ *                       May be NULL.
+ *
+ * Returns: STREAM_OK, or STREAM_ERROR_INVALID_ARG for NULL handle.
+ */
+int32_t stream_cost_info_v1(StreamHandle* handle,
+                            double* out_remaining_budget,
+                            int32_t* out_budget_exceeded);
 
 /* --- Cancellation --- */
 

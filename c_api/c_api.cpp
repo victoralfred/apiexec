@@ -207,6 +207,59 @@ extern "C" auto stream_next_v2_sc(StreamHandle* handle,
     return STREAM_OK;
 }
 
+// --- Record-level streaming ---
+
+extern "C" auto stream_foreach_v1(StreamHandle* handle,
+                                   stream_record_cb cb,
+                                   void* user_data) -> int32_t {
+    if (is_null_handle(handle) || cb == nullptr) {
+        return STREAM_ERROR_INVALID_ARG;
+    }
+
+    while (true) {
+        int32_t rc = ensure_fetched(handle);
+        if (rc == STREAM_EXHAUSTED) return STREAM_OK;
+        if (rc != STREAM_OK) return rc;
+
+        // Parse the cached JSON array and deliver records one by one
+        try {
+            auto arr = nlohmann::json::parse(handle->cached_json);
+            for (const auto& record : arr) {
+                std::string json_str = record.dump();
+                int32_t cb_rc = cb(json_str.c_str(),
+                                    static_cast<int32_t>(json_str.size()),
+                                    user_data);
+                if (cb_rc != STREAM_OK) return cb_rc;
+            }
+        } catch (...) {
+            return STREAM_ERROR_PARSE;
+        }
+
+        consume_cache(handle);
+    }
+}
+
+// --- Cost / Budget ---
+
+extern "C" auto stream_cost_info_v1(StreamHandle* handle,
+                                     double* out_remaining_budget,
+                                     int32_t* out_budget_exceeded) -> int32_t {
+    if (is_null_handle(handle)) {
+        return STREAM_ERROR_INVALID_ARG;
+    }
+
+    if (out_remaining_budget != nullptr) {
+        auto budget = handle->engine->remaining_budget();
+        *out_remaining_budget = budget.has_value() ? budget.value() : -1.0;
+    }
+
+    if (out_budget_exceeded != nullptr) {
+        *out_budget_exceeded = handle->engine->budget_exceeded() ? 1 : 0;
+    }
+
+    return STREAM_OK;
+}
+
 // --- Cancellation ---
 
 extern "C" auto stream_cancel(StreamHandle* handle) -> void {

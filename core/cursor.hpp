@@ -11,6 +11,11 @@ inline constexpr std::size_t kCursorExtraMaxEntries = 16;
 // Maximum byte length of a single extra value.
 inline constexpr std::size_t kCursorExtraMaxValueLen = 256;
 
+// Reserved extra keys for cost metadata (used by CostAwarePolicy / AI adapters).
+inline constexpr const char* kCursorExtraCostUnits = "_cost_units";
+inline constexpr const char* kCursorExtraTokenCount = "_token_count";
+inline constexpr const char* kCursorExtraCumulativeCost = "_cumulative_cost";
+
 struct Cursor {
     // Time-window boundaries (epoch milliseconds). 0 means unset.
     int64_t time_window_start = 0;

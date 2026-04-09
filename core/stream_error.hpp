@@ -16,6 +16,7 @@ enum class StreamErrorCode : int32_t {
     NETWORK        = -5,
     CANCELLED      = -6,
     INVALID_ARG    = -7,
+    BUDGET_EXHAUSTED = -8,
 };
 
 } // namespace apiexec

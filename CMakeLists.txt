@@ -142,6 +142,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/prefetch_test.cpp")
     add_test(NAME prefetch_test COMMAND prefetch_test)
 endif()
 
+# streaming_test: core/ + policy/ (mock adapter/transport, no curl)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/streaming_test.cpp")
+    add_executable(streaming_test ../tests/unit/streaming_test.cpp)
+    target_link_libraries(streaming_test PRIVATE apiexec_policy)
+    add_test(NAME streaming_test COMMAND streaming_test)
+endif()
+
+# cost_hooks_test: core/ + policy/ (mock adapter/transport, no curl)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/cost_hooks_test.cpp")
+    add_executable(cost_hooks_test ../tests/unit/cost_hooks_test.cpp)
+    target_link_libraries(cost_hooks_test PRIVATE apiexec_policy)
+    add_test(NAME cost_hooks_test COMMAND cost_hooks_test)
+endif()
+
 # c_api_test: all layers including C API
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/c_api_test.cpp")
     add_executable(c_api_test ../tests/unit/c_api_test.cpp)

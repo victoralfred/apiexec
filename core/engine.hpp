@@ -89,9 +89,41 @@ public:
         stream_done_.store(true, std::memory_order_release);
     }
 
-    auto cursor() const -> const Cursor& { return cursor_; }
+    auto cursor() const -> Cursor {
+        std::lock_guard<std::mutex> lock(cursor_mutex_);
+        return cursor_;
+    }
 
     auto set_sleep_fn(std::function<void(Duration)> fn) -> void { sleep_fn_ = std::move(fn); }
+
+    // --- Record-level streaming interface ---
+
+    // Per-record callback. Return false to stop iteration.
+    using RecordCallback = std::function<bool(const T& record)>;
+
+    // Stream mode: calls cb for each record in each batch until exhaustion,
+    // error, or the callback returns false. Returns the terminal error code
+    // (OK if fully exhausted, CANCELLED if cb returned false).
+    auto stream(RecordCallback cb) -> StreamErrorCode {
+        while (has_next()) {
+            auto result = next_batch();
+            if (result.error == StreamErrorCode::EXHAUSTED) return StreamErrorCode::OK;
+            if (result.error != StreamErrorCode::OK) return result.error;
+            for (auto& record : result.records) {
+                if (!cb(record)) return StreamErrorCode::CANCELLED;
+            }
+        }
+        return is_cancelled() ? StreamErrorCode::CANCELLED : StreamErrorCode::OK;
+    }
+
+    // Cost info for the C API boundary.
+    auto remaining_budget() const -> std::optional<double> {
+        return policy_->remaining_budget();
+    }
+
+    auto budget_exceeded() const -> bool {
+        return policy_->budget_exceeded();
+    }
 
 private:
     enum class LoopSignal { PROCEED, RETRY, TERMINAL };
@@ -108,7 +140,17 @@ private:
             FetchResult<T> result = collect_prefetch();
             prefetch_in_flight_ = false;
 
-            if (result.error == StreamErrorCode::OK && !cursor_.exhausted) {
+            if (result.error == StreamErrorCode::OK) {
+                prefetch_consecutive_failures_ = 0;
+                if (!cursor_.exhausted) {
+                    start_prefetch();
+                } else {
+                    stream_done_.store(true, std::memory_order_release);
+                }
+            } else if (!cursor_.exhausted && !is_cancelled()
+                       && prefetch_consecutive_failures_ < kMaxPrefetchRetries) {
+                // Transient error — auto-retry one prefetch
+                ++prefetch_consecutive_failures_;
                 start_prefetch();
             } else {
                 stream_done_.store(true, std::memory_order_release);
@@ -145,7 +187,14 @@ private:
 
     auto collect_prefetch() -> FetchResult<T> {
         std::unique_lock<std::mutex> lock(prefetch_mutex_);
-        prefetch_cv_.wait(lock, [this] { return prefetch_ready_; });
+        bool completed = prefetch_cv_.wait_for(lock, kPrefetchTimeout,
+                                                [this] { return prefetch_ready_; });
+        if (!completed) {
+            cancel_flag_.store(true, std::memory_order_relaxed);
+            FetchResult<T> timeout_result;
+            timeout_result.error = StreamErrorCode::NETWORK;
+            return timeout_result;
+        }
         return std::move(prefetch_result_);
     }
 
@@ -169,9 +218,14 @@ private:
             result.error = StreamErrorCode::CANCELLED;
             return result;
         }
+        if (policy_->budget_exceeded()) {
+            result.error = StreamErrorCode::BUDGET_EXHAUSTED;
+            return result;
+        }
 
         int retry_count = 0;
         const int max_retries = policy_->max_retries();
+        saw_rate_limit_this_cycle_ = false;
 
         while (true) {
             if (is_cancelled()) {
@@ -195,14 +249,26 @@ private:
 
             T parsed;
             if (!adapter_->parse_response(resp, parsed)) {
-                // Parse failure does not trigger window shrink — the server
-                // responded successfully; the issue is data format, not load.
                 result.error = StreamErrorCode::PARSE;
                 return result;
             }
 
-            cursor_ = adapter_->next_cursor(cursor_, resp);
-            policy_->adjust(cursor_, true);
+            {
+                std::lock_guard<std::mutex> lock(cursor_mutex_);
+                cursor_ = adapter_->next_cursor(cursor_, resp);
+            }
+
+            // Only grow the window if no rate-limit pressure was seen this cycle.
+            if (!saw_rate_limit_this_cycle_) {
+                std::lock_guard<std::mutex> lock(cursor_mutex_);
+                policy_->adjust(cursor_, true);
+            }
+
+            // Record cost if the adapter provides it
+            auto cost = adapter_->response_cost(resp);
+            if (cost.has_value()) {
+                policy_->record_cost(cursor_, cost.value());
+            }
 
             if (cursor_.exhausted) {
                 stream_done_.store(true, std::memory_order_release);
@@ -217,6 +283,7 @@ private:
     // --- Error handling ---
 
     auto handle_error(const Response& resp, int& retry_count, int max_retries) -> ErrorAction {
+        // Network error (status 0)
         if (resp.status_code == 0) {
             if (is_cancelled()) return {LoopSignal::TERMINAL, StreamErrorCode::CANCELLED};
             if (retry_count < max_retries) {
@@ -227,12 +294,24 @@ private:
             return {LoopSignal::TERMINAL, StreamErrorCode::NETWORK};
         }
 
+        // 4xx non-429: fail immediately. No window adjustment — auth/validation
+        // errors are not load signals.
         if (resp.is_client_error()) {
-            policy_->adjust(cursor_, false);
             return {LoopSignal::TERMINAL, StreamErrorCode::CLIENT};
         }
 
+        // Retryable errors (429, 5xx)
         if (adapter_->is_retryable(resp)) {
+            // 429: signal rate-limit pressure on first encounter this cycle.
+            // This shrinks the window immediately so the next request scope is smaller.
+            if (resp.is_rate_limited() && !saw_rate_limit_this_cycle_) {
+                {
+                    std::lock_guard<std::mutex> lock(cursor_mutex_);
+                    policy_->adjust(cursor_, false);
+                }
+                saw_rate_limit_this_cycle_ = true;
+            }
+
             if (retry_count < max_retries) {
                 auto retry_after = adapter_->retry_after(resp);
                 if (retry_after.has_value() && retry_after.value() > 0) {
@@ -244,7 +323,10 @@ private:
                 ++retry_count;
                 return {LoopSignal::RETRY, {}};
             }
-            policy_->adjust(cursor_, false);
+
+            // Terminal: retries exhausted. No additional adjust — 429 already
+            // adjusted on first encounter; 5xx is an infrastructure issue,
+            // not a load signal.
             auto code = resp.is_rate_limited() ? StreamErrorCode::RATE_LIMIT
                                                : StreamErrorCode::SERVER;
             return {LoopSignal::TERMINAL, code};
@@ -277,8 +359,17 @@ private:
     std::atomic<bool> cancel_flag_;
     std::function<void(Duration)> sleep_fn_;
 
+    // --- Rate-limit tracking ---
+    bool saw_rate_limit_this_cycle_ = false;
+
+    // --- Cursor synchronisation ---
+    mutable std::mutex cursor_mutex_;
+
     // --- Prefetch ---
+    static constexpr int kMaxPrefetchRetries = 1;
+    static constexpr auto kPrefetchTimeout = std::chrono::minutes(10);
     bool prefetch_enabled_;
+    int prefetch_consecutive_failures_ = 0;
     std::atomic<bool> prefetch_in_flight_{false};
     std::atomic<bool> stream_done_;
     std::thread prefetch_thread_;
