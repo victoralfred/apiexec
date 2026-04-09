@@ -16,17 +16,10 @@ using Duration = std::chrono::milliseconds;
 struct ExecutionPolicy {
     virtual ~ExecutionPolicy() = default;
 
-    // Adjust cursor window: grow on success, shrink on failure.
-    virtual void adjust(Cursor& cursor, bool success) = 0;
-
-    // Compute backoff duration for the given retry attempt.
-    virtual Duration backoff(int retry_count) = 0;
-
-    // Number of pages to prefetch ahead (0 = sequential, 1 = double-buffer).
-    virtual std::size_t prefetch_depth() = 0;
-
-    // Maximum number of retries before giving up.
-    virtual int max_retries() const = 0;
+    virtual auto adjust(Cursor& cursor, bool success) -> void = 0;
+    virtual auto backoff(int retry_count) -> Duration = 0;
+    virtual auto prefetch_depth() -> std::size_t = 0;
+    virtual auto max_retries() const -> int = 0;
 };
 
 } // namespace apiexec

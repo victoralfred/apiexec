@@ -2,21 +2,21 @@
 
 namespace apiexec {
 
-Registry& Registry::instance() {
+auto Registry::instance() -> Registry& {
     static Registry reg;
     return reg;
 }
 
-void Registry::register_adapter(const std::string& name, AdapterFactory factory) {
+auto Registry::register_adapter(const std::string& name, AdapterFactory factory) -> void {
     factories_[name] = std::move(factory);
 }
 
-AdapterFactory Registry::find(const std::string& name) const {
+auto Registry::find(const std::string& name) const -> AdapterFactory {
     auto it = factories_.find(name);
     return it != factories_.end() ? it->second : nullptr;
 }
 
-std::vector<std::string> Registry::adapter_names() const {
+auto Registry::adapter_names() const -> std::vector<std::string> {
     std::vector<std::string> names;
     names.reserve(factories_.size());
     for (const auto& [name, _] : factories_) {

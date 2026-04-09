@@ -4,26 +4,28 @@
 
 namespace apiexec {
 
+constexpr size_t MAX_CONFIG_JSON_SIZE   = 65536;  // 64 KB
+constexpr int    MAX_RETRY_AFTER_SECS   = 3600;   // 1 hour
+
 GenericRestAdapter::GenericRestAdapter(Config cfg) : config_(std::move(cfg)) {}
 
-GenericRestAdapter::Config GenericRestAdapter::from_json(const std::string& config_json) {
-    // Security: reject oversized config
-    if (config_json.size() > 65536) {
+auto GenericRestAdapter::from_json(const std::string& config_json) -> Config {
+    if (config_json.size() > MAX_CONFIG_JSON_SIZE) {
         throw std::invalid_argument("config_json exceeds 64KB limit");
     }
 
     auto j = nlohmann::json::parse(config_json);
     Config cfg;
-    cfg.base_url        = j.at("base_url").get<std::string>();
-    cfg.auth_header     = j.value("auth_header", "");
-    cfg.data_field      = j.value("data_field", "data");
+    cfg.base_url         = j.at("base_url").get<std::string>();
+    cfg.auth_header      = j.value("auth_header", "");
+    cfg.data_field       = j.value("data_field", "data");
     cfg.next_token_field = j.value("next_token_field", "next");
-    cfg.page_param      = j.value("page_param", "cursor");
-    cfg.page_size       = j.value("page_size", 100);
+    cfg.page_param       = j.value("page_param", "cursor");
+    cfg.page_size        = j.value("page_size", DEFAULT_PAGE_SIZE);
     return cfg;
 }
 
-Request GenericRestAdapter::build_request(const Cursor& cursor) {
+auto GenericRestAdapter::build_request(const Cursor& cursor) -> Request {
     Request req;
     req.method = Request::Method::GET;
 
@@ -58,7 +60,7 @@ Request GenericRestAdapter::build_request(const Cursor& cursor) {
     return req;
 }
 
-bool GenericRestAdapter::parse_response(const Response& resp, JsonBatch& out) {
+auto GenericRestAdapter::parse_response(const Response& resp, JsonBatch& out) -> bool {
     try {
         last_parsed_ = nlohmann::json::parse(resp.body);
 
@@ -75,7 +77,7 @@ bool GenericRestAdapter::parse_response(const Response& resp, JsonBatch& out) {
     }
 }
 
-Cursor GenericRestAdapter::next_cursor(const Cursor& current, const Response& /*resp*/) {
+auto GenericRestAdapter::next_cursor(const Cursor& current, const Response& /*resp*/) -> Cursor {
     Cursor next = current;
 
     if (last_parsed_.contains(config_.next_token_field) &&
@@ -95,11 +97,11 @@ Cursor GenericRestAdapter::next_cursor(const Cursor& current, const Response& /*
     return next;
 }
 
-auto GenericRestAdapter::is_retryable(const Response& resp)  -> bool {
+auto GenericRestAdapter::is_retryable(const Response& resp) -> bool {
     return resp.is_rate_limited() || resp.is_server_error();
 }
 
-std::optional<int> GenericRestAdapter::retry_after(const Response& resp) {
+auto GenericRestAdapter::retry_after(const Response& resp) -> std::optional<int> {
     std::string val = resp.header("retry-after");
     if (val.empty()) {
         return std::nullopt;
@@ -107,7 +109,7 @@ std::optional<int> GenericRestAdapter::retry_after(const Response& resp) {
 
     try {
         int seconds = std::stoi(val);
-        if (seconds <= 0 || seconds > 3600) return std::nullopt;
+        if (seconds <= 0 || seconds > MAX_RETRY_AFTER_SECS) return std::nullopt;
         return seconds;
     } catch (...) {
         return std::nullopt;

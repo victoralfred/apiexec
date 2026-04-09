@@ -27,16 +27,16 @@ struct Cursor {
 
     // Try to insert into extra. Returns false if the entry would violate
     // size caps (max entries or max value length).
-    bool set_extra(const std::string& key, const std::string& value) {
+    auto set_extra(const std::string& key, const std::string& value) -> bool {
         if (value.size() > kCursorExtraMaxValueLen) return false;
         if (extra.count(key) == 0 && extra.size() >= kCursorExtraMaxEntries) return false;
         extra[key] = value;
         return true;
     }
 
-    void clear_extra() { extra.clear(); }
+    auto clear_extra() -> void { extra.clear(); }
 
-    bool has_time_window() const {
+    auto has_time_window() const -> bool {
         return time_window_start != 0 || time_window_end != 0;
     }
 };

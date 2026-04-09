@@ -17,11 +17,11 @@ public:
 
     // Non-copyable, movable.
     CurlTransport(const CurlTransport&) = delete;
-    CurlTransport& operator=(const CurlTransport&) = delete;
+    auto operator=(const CurlTransport&) -> CurlTransport& = delete;
     CurlTransport(CurlTransport&& other) noexcept;
-    CurlTransport& operator=(CurlTransport&& other) noexcept;
+    auto operator=(CurlTransport&& other) noexcept -> CurlTransport&;
 
-    Response execute(const Request& req, std::atomic<bool>& cancel_flag) override;
+    auto execute(const Request& req, std::atomic<bool>& cancel_flag) -> Response override;
 
 private:
     void* curl_handle_ = nullptr;  // CURL* — opaque to avoid leaking curl.h

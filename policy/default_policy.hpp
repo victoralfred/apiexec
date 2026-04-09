@@ -24,16 +24,14 @@ public:
     DefaultPolicy() : DefaultPolicy(Config{}) {}
     explicit DefaultPolicy(Config cfg);
 
-    // Construct from a JSON config string. Throws on parse failure or
-    // invalid values. Unknown keys are rejected.
-    static DefaultPolicy from_json(const std::string& config_json);
+    static auto from_json(const std::string& config_json) -> DefaultPolicy;
 
-    void adjust(Cursor& cursor, bool success) override;
-    Duration backoff(int retry_count) override;
-    std::size_t prefetch_depth() override;
-    int max_retries() const override { return config_.max_retries; }
+    auto adjust(Cursor& cursor, bool success) -> void override;
+    auto backoff(int retry_count) -> Duration override;
+    auto prefetch_depth() -> std::size_t override;
+    auto max_retries() const -> int override { return config_.max_retries; }
 
-    const Config& config() const { return config_; }
+    auto config() const -> const Config& { return config_; }
 
 private:
     Config config_;

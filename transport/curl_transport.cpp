@@ -6,17 +6,21 @@
 
 namespace apiexec {
 
-// ---------- write callback for response body ----------
+// --- Transport configuration constants ---
+constexpr size_t MAX_RESPONSE_BODY_SIZE = 16 * 1024 * 1024;  // 16 MB
+constexpr long   CONNECT_TIMEOUT_SECS   = 10L;
+constexpr long   REQUEST_TIMEOUT_SECS   = 30L;
+constexpr long   TCP_KEEPIDLE_SECS      = 60L;
+constexpr long   TCP_KEEPINTVL_SECS     = 30L;
 
-// Maximum response body size (16 MB). Exceeding this aborts the transfer.
-inline constexpr size_t kMaxResponseBodySize = 16 * 1024 * 1024;
+// ---------- write callback for response body ----------
 
 struct WriteContext {
     std::string* body;
     size_t limit;
 };
 
-static size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+static auto write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
     auto* ctx = static_cast<WriteContext*>(userdata);
     size_t total = size * nmemb;
     if (ctx->body->size() + total > ctx->limit) {
@@ -28,7 +32,7 @@ static size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
 
 // ---------- header callback to capture response headers ----------
 
-static size_t header_cb(char* buffer, size_t size, size_t nitems, void* userdata) {
+static auto header_cb(char* buffer, size_t size, size_t nitems, void* userdata) -> size_t {
     auto* headers = static_cast<std::map<std::string, std::string>*>(userdata);
     size_t total = size * nitems;
     std::string line(buffer, total);
@@ -57,8 +61,8 @@ static size_t header_cb(char* buffer, size_t size, size_t nitems, void* userdata
 
 // ---------- progress callback for cancellation ----------
 
-static int progress_cb(void* clientp, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
-                        curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
+static auto progress_cb(void* clientp, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
+                         curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) -> int {
     auto* cancel = static_cast<std::atomic<bool>*>(clientp);
     return cancel->load(std::memory_order_relaxed) ? 1 : 0;
 }
@@ -80,7 +84,7 @@ CurlTransport::CurlTransport(CurlTransport&& other) noexcept
     other.curl_handle_ = nullptr;
 }
 
-CurlTransport& CurlTransport::operator=(CurlTransport&& other) noexcept {
+auto CurlTransport::operator=(CurlTransport&& other) noexcept -> CurlTransport& {
     if (this != &other) {
         if (curl_handle_) curl_easy_cleanup(static_cast<CURL*>(curl_handle_));
         curl_handle_ = other.curl_handle_;
@@ -89,7 +93,7 @@ CurlTransport& CurlTransport::operator=(CurlTransport&& other) noexcept {
     return *this;
 }
 
-Response CurlTransport::execute(const Request& req, std::atomic<bool>& cancel_flag) {
+auto CurlTransport::execute(const Request& req, std::atomic<bool>& cancel_flag) -> Response {
     Response resp;
 
     if (!curl_handle_) {
@@ -110,13 +114,13 @@ Response CurlTransport::execute(const Request& req, std::atomic<bool>& cancel_fl
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
 
     // Timeouts
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_SECS);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, REQUEST_TIMEOUT_SECS);
 
     // TCP keepalive
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
-    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, TCP_KEEPIDLE_SECS);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, TCP_KEEPINTVL_SECS);
 
     // POST body
     if (req.method == Request::Method::POST) {
@@ -136,7 +140,7 @@ Response CurlTransport::execute(const Request& req, std::atomic<bool>& cancel_fl
     }
 
     // Response body callback with size cap
-    WriteContext write_ctx{&resp.body, kMaxResponseBodySize};
+    WriteContext write_ctx{&resp.body, MAX_RESPONSE_BODY_SIZE};
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_ctx);
 

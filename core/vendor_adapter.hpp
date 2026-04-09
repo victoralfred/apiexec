@@ -16,20 +16,11 @@ template <typename T>
 struct VendorAdapter {
     virtual ~VendorAdapter() = default;
 
-    // Build the HTTP request for the current cursor position.
-    virtual Request build_request(const Cursor& cursor) = 0;
-
-    // Parse the HTTP response into output T. Return false on parse failure.
-    virtual bool parse_response(const Response& resp, T& out) = 0;
-
-    // Compute the next cursor position given current cursor and response.
-    virtual Cursor next_cursor(const Cursor& current, const Response& resp) = 0;
-
-    // Should this response be retried? (true for 429, 5xx)
-    virtual bool is_retryable(const Response& resp) = 0;
-
-    // If the server sent a Retry-After hint, return the delay in seconds.
-    virtual std::optional<int> retry_after(const Response& resp) = 0;
+    virtual auto build_request(const Cursor& cursor) -> Request = 0;
+    virtual auto parse_response(const Response& resp, T& out) -> bool = 0;
+    virtual auto next_cursor(const Cursor& current, const Response& resp) -> Cursor = 0;
+    virtual auto is_retryable(const Response& resp) -> bool = 0;
+    virtual auto retry_after(const Response& resp) -> std::optional<int> = 0;
 };
 
 } // namespace apiexec

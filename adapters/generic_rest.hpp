@@ -8,6 +8,8 @@
 
 namespace apiexec {
 
+constexpr int DEFAULT_PAGE_SIZE = 100;
+
 // A batch of parsed JSON records from a paginated REST API.
 struct JsonBatch {
     nlohmann::json records;  // JSON array of records from this page
@@ -37,18 +39,18 @@ public:
         std::string data_field = "data";
         std::string next_token_field = "next";
         std::string page_param = "cursor";
-        int page_size = 100;
+        int page_size = DEFAULT_PAGE_SIZE;
     };
 
     explicit GenericRestAdapter(Config cfg);
 
-    Request build_request(const Cursor& cursor) override;
-    bool parse_response(const Response& resp, JsonBatch& out) override;
-    Cursor next_cursor(const Cursor& current, const Response& resp) override;
-    bool is_retryable(const Response& resp) override;
-    std::optional<int> retry_after(const Response& resp) override;
+    auto build_request(const Cursor& cursor) -> Request override;
+    auto parse_response(const Response& resp, JsonBatch& out) -> bool override;
+    auto next_cursor(const Cursor& current, const Response& resp) -> Cursor override;
+    auto is_retryable(const Response& resp) -> bool override;
+    auto retry_after(const Response& resp) -> std::optional<int> override;
 
-    static Config from_json(const std::string& config_json);
+    static auto from_json(const std::string& config_json) -> Config;
 
 private:
     Config config_;

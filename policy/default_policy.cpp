@@ -5,43 +5,59 @@
 #include <random>
 
 namespace apiexec {
+constexpr double MAX_TIMEOUT_MS = 32000.0;
+constexpr double JITTER_FACTOR = 0.25; // +/- 25% jitter
+constexpr double JITTER_MIN = 1.0 - JITTER_FACTOR;
+constexpr double JITTER_MAX = 1.0 + JITTER_FACTOR;
+constexpr double DELAY_MULTIPLIER = 2.0; // Exponential backoff multiplier
+
 
 DefaultPolicy::DefaultPolicy(Config cfg) : config_(std::move(cfg)) {}
 
 void DefaultPolicy::adjust(Cursor& cursor, bool success) {
-    if (!cursor.has_time_window()) return;
+    if (!cursor.has_time_window()){
+        return;
+    }
 
-    int64_t window = cursor.time_window_end - cursor.time_window_start;
-    if (window <= 0) return;
+    const int64_t window = cursor.time_window_end - cursor.time_window_start;
+    if (window <= 0){
+        return;
+    }
+
+    const double factor = success
+        ? config_.window_grow_factor
+        : config_.window_shrink_factor;
+
+    auto new_window = static_cast<int64_t>(
+        static_cast<double>(window) * factor
+    );
 
     if (success) {
-        int64_t new_window = static_cast<int64_t>(window * config_.window_grow_factor);
         new_window = std::min(new_window, config_.max_window_ms);
-        cursor.time_window_end = cursor.time_window_start + new_window;
     } else {
-        int64_t new_window = static_cast<int64_t>(window * config_.window_shrink_factor);
         new_window = std::max(new_window, config_.min_window_ms);
-        cursor.time_window_end = cursor.time_window_start + new_window;
     }
+
+    cursor.time_window_end = cursor.time_window_start + new_window;
 }
 
-Duration DefaultPolicy::backoff(int retry_count) {
+auto DefaultPolicy::backoff(int retry_count) -> Duration {
     // Exponential: base * 2^retry
-    double base = static_cast<double>(config_.base_backoff_ms);
-    double delay = base * std::pow(2.0, retry_count);
+    auto base = static_cast<double>(config_.base_backoff_ms);
+    double delay = base * std::pow(DELAY_MULTIPLIER, retry_count);
 
     // Cap at 32 seconds
-    delay = std::min(delay, 32000.0);
+    delay = std::min(delay, MAX_TIMEOUT_MS);
 
     // Jitter: +/- 25%
     thread_local std::mt19937 rng{std::random_device{}()};
-    std::uniform_real_distribution<double> jitter(0.75, 1.25);
+    std::uniform_real_distribution<double> jitter(JITTER_MIN, JITTER_MAX);
     delay *= jitter(rng);
 
     return Duration(static_cast<int64_t>(delay));
 }
 
-std::size_t DefaultPolicy::prefetch_depth() {
+auto DefaultPolicy::prefetch_depth() -> std::size_t  {
     return config_.prefetch_depth_val;
 }
 

@@ -4,7 +4,7 @@
 
 #include <iostream>
 
-int main(int argc, char* argv[]) {
+auto main(int argc, char* argv[]) -> int {
     std::cout << "apiexec v0.1.0 — vendor-agnostic streaming execution engine\n";
 
     if (argc < 2) {

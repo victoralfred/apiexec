@@ -8,17 +8,15 @@
 
 namespace apiexec {
 
-// AdapterFactory creates an opaque engine handle from a JSON config string.
-// Returns nullptr on failure.
 using AdapterFactory = std::function<void*(const std::string& config_json)>;
 
 class Registry {
 public:
-    static Registry& instance();
+    static auto instance() -> Registry&;
 
-    void register_adapter(const std::string& name, AdapterFactory factory);
-    AdapterFactory find(const std::string& name) const;
-    std::vector<std::string> adapter_names() const;
+    auto register_adapter(const std::string& name, AdapterFactory factory) -> void;
+    auto find(const std::string& name) const -> AdapterFactory;
+    auto adapter_names() const -> std::vector<std::string>;
 
 private:
     Registry() = default;

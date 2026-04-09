@@ -17,6 +17,9 @@
 
 namespace apiexec {
 
+constexpr int MAX_RETRY_AFTER_SECS = 3600;  // 1 hour cap on Retry-After
+constexpr int MS_PER_SECOND        = 1000;
+
 template <typename T>
 struct FetchResult {
     StreamErrorCode error = StreamErrorCode::OK;
@@ -68,30 +71,29 @@ public:
     }
 
     ExecutionEngine(const ExecutionEngine&) = delete;
-    ExecutionEngine& operator=(const ExecutionEngine&) = delete;
+    auto operator=(const ExecutionEngine&) -> ExecutionEngine& = delete;
 
-    bool has_next() const {
-        // If a prefetch is in flight, there's a result to collect
+    auto has_next() const -> bool {
         if (prefetch_in_flight_) return true;
         return !stream_done_.load(std::memory_order_acquire)
             && !cancel_flag_.load(std::memory_order_relaxed);
     }
 
-    FetchResult<T> next_batch() {
+    auto next_batch() -> FetchResult<T> {
         if (prefetch_enabled_) {
             return next_batch_prefetch();
         }
         return fetch_one();
     }
 
-    void cancel() {
+    auto cancel() -> void {
         cancel_flag_.store(true, std::memory_order_relaxed);
         stream_done_.store(true, std::memory_order_release);
     }
 
-    const Cursor& cursor() const { return cursor_; }
+    auto cursor() const -> const Cursor& { return cursor_; }
 
-    void set_sleep_fn(std::function<void(Duration)> fn) { sleep_fn_ = std::move(fn); }
+    auto set_sleep_fn(std::function<void(Duration)> fn) -> void { sleep_fn_ = std::move(fn); }
 
 private:
     enum class LoopSignal { PROCEED, RETRY, TERMINAL };
@@ -103,13 +105,11 @@ private:
 
     // --- Prefetch mode ---
 
-    FetchResult<T> next_batch_prefetch() {
-        // If a prefetch is in flight, always collect its result first
+    auto next_batch_prefetch() -> FetchResult<T> {
         if (prefetch_in_flight_) {
             FetchResult<T> result = collect_prefetch();
             prefetch_in_flight_ = false;
 
-            // If this result is successful and there's more data, start next prefetch
             if (result.error == StreamErrorCode::OK && !cursor_.exhausted) {
                 start_prefetch();
             } else {
@@ -119,14 +119,13 @@ private:
             return result;
         }
 
-        // No prefetch in flight and stream is done
         FetchResult<T> r;
         r.error = cancel_flag_.load() ? StreamErrorCode::CANCELLED
                                       : StreamErrorCode::EXHAUSTED;
         return r;
     }
 
-    void start_prefetch() {
+    auto start_prefetch() -> void {
         join_prefetch();
 
         {
@@ -146,13 +145,13 @@ private:
         });
     }
 
-    FetchResult<T> collect_prefetch() {
+    auto collect_prefetch() -> FetchResult<T> {
         std::unique_lock<std::mutex> lock(prefetch_mutex_);
         prefetch_cv_.wait(lock, [this] { return prefetch_ready_; });
         return std::move(prefetch_result_);
     }
 
-    void join_prefetch() {
+    auto join_prefetch() -> void {
         if (prefetch_thread_.joinable()) {
             prefetch_thread_.join();
         }
@@ -160,7 +159,7 @@ private:
 
     // --- Template method: single fetch cycle ---
 
-    FetchResult<T> fetch_one() {
+    auto fetch_one() -> FetchResult<T> {
         FetchResult<T> result;
 
         if (cursor_.exhausted) {
@@ -198,6 +197,8 @@ private:
 
             T parsed;
             if (!adapter_->parse_response(resp, parsed)) {
+                // Parse failure does not trigger window shrink — the server
+                // responded successfully; the issue is data format, not load.
                 result.error = StreamErrorCode::PARSE;
                 return result;
             }
@@ -217,7 +218,7 @@ private:
 
     // --- Error handling ---
 
-    ErrorAction handle_error(const Response& resp, int& retry_count, int max_retries) {
+    auto handle_error(const Response& resp, int& retry_count, int max_retries) -> ErrorAction {
         if (resp.status_code == 0) {
             if (is_cancelled()) return {LoopSignal::TERMINAL, StreamErrorCode::CANCELLED};
             if (retry_count < max_retries) {
@@ -237,8 +238,8 @@ private:
             if (retry_count < max_retries) {
                 auto retry_after = adapter_->retry_after(resp);
                 if (retry_after.has_value() && retry_after.value() > 0) {
-                    int clamped = std::min(retry_after.value(), 3600);
-                    sleep_for(Duration(clamped * 1000));
+                    int clamped = std::min(retry_after.value(), MAX_RETRY_AFTER_SECS);
+                    sleep_for(Duration(clamped * MS_PER_SECOND));
                 } else {
                     sleep_for(policy_->backoff(retry_count));
                 }
@@ -256,11 +257,11 @@ private:
 
     // --- Utilities ---
 
-    bool is_cancelled() const {
+    auto is_cancelled() const -> bool {
         return cancel_flag_.load(std::memory_order_relaxed);
     }
 
-    void sleep_for(Duration d) {
+    auto sleep_for(Duration d) -> void {
         if (sleep_fn_) {
             sleep_fn_(d);
         } else {
