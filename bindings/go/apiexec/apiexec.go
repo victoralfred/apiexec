@@ -9,7 +9,7 @@
 package apiexec
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../../../build -lapiexec_capi -lapiexec_adapters -lapiexec_transport -lapiexec_policy -lcurl -lstdc++ -lm
+#cgo LDFLAGS: -L${SRCDIR}/../../../build -lapiexec -Wl,-rpath,${SRCDIR}/../../../build
 #cgo CFLAGS: -I${SRCDIR}/../../../source/c_api
 #include "c_api.h"
 #include <stdlib.h>

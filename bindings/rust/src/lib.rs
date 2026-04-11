@@ -92,9 +92,11 @@ pub struct Stream {
     handle: *mut StreamHandle,
 }
 
-// SAFETY: The C handle is single-consumer but can be cancelled from any thread.
-// We document that Stream must not be shared without external sync.
+// SAFETY: stream_cancel is thread-safe per the C API contract. Callers must
+// not call next_batch/has_next concurrently from multiple threads without
+// external synchronisation — this is documented in the public API.
 unsafe impl Send for Stream {}
+unsafe impl Sync for Stream {}
 
 impl Stream {
     /// Create a new stream. `policy_json` may be empty for defaults.
