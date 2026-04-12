@@ -7,8 +7,8 @@
 //   - Structured logging on every error path
 //   - Multi-prompt streaming with prefetch
 //
-// Usage: ./ollama_demo [ollama_host] [model] [budget_tokens]
-//   Defaults: 192.168.1.104:11434  qwen3:8b  500
+// Usage: ./ollama_demo [ollama_host] [model] [budget_tokens] [max_tokens_per_response]
+//   Defaults: 192.168.1.104:11434  qwen3:8b  5000  1024
 //
 // Requires: Ollama running with a model loaded.
 
@@ -27,19 +27,21 @@
 
 using namespace apiexec;
 
-constexpr double DEFAULT_BUDGET_TOKENS = 500.0;
+constexpr double DEFAULT_BUDGET_TOKENS = 5000.0;
 constexpr double PRICE_PER_TOKEN = 0.0;  // Ollama is free, but we track tokens
-constexpr int MAX_TOKENS_PER_RESPONSE = 100;
+constexpr int DEFAULT_MAX_TOKENS_PER_RESPONSE = 1024;
 
 auto main(int argc, char* argv[]) -> int {
     // --- Parse arguments ---
     std::string host = "192.168.1.104:11434";
     std::string model = "qwen3:8b";
     double budget = DEFAULT_BUDGET_TOKENS;
+    int max_tokens = DEFAULT_MAX_TOKENS_PER_RESPONSE;
 
     if (argc > 1) host = argv[1];
     if (argc > 2) model = argv[2];
     if (argc > 3) budget = std::stod(argv[3]);
+    if (argc > 4) max_tokens = std::stoi(argv[4]);
 
     std::string base_url = "http://" + host + "/v1/chat/completions";
 
@@ -62,7 +64,7 @@ auto main(int argc, char* argv[]) -> int {
               << "Model:   " << model << "\n"
               << "Prompts: " << prompts.size() << "\n"
               << "Budget:  " << budget << " tokens\n"
-              << "Max per response: " << MAX_TOKENS_PER_RESPONSE << " tokens\n\n";
+              << "Max per response: " << max_tokens << " tokens\n\n";
 
     // --- Build adapter config ---
     nlohmann::json config;
@@ -70,7 +72,7 @@ auto main(int argc, char* argv[]) -> int {
     config["api_key"] = "ollama";  // Ollama doesn't check this, but the field is required
     config["model"] = model;
     config["prompts"] = prompts;
-    config["max_tokens"] = MAX_TOKENS_PER_RESPONSE;
+    config["max_tokens"] = max_tokens;
     config["temperature"] = 0.7;
 
     // --- Build cost-aware policy ---

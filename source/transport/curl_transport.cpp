@@ -9,7 +9,7 @@ namespace apiexec {
 // --- Transport configuration constants ---
 constexpr size_t MAX_RESPONSE_BODY_SIZE = 16 * 1024 * 1024;  // 16 MB
 constexpr long   CONNECT_TIMEOUT_SECS   = 10L;
-constexpr long   REQUEST_TIMEOUT_SECS   = 30L;
+constexpr long   REQUEST_TIMEOUT_SECS   = 120L;
 constexpr long   TCP_KEEPIDLE_SECS      = 60L;
 constexpr long   TCP_KEEPINTVL_SECS     = 30L;
 
