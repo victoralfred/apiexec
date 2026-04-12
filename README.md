@@ -79,65 +79,84 @@ cmake --build build_asan
 
 ## Installation
 
-### System-wide install (no LD_LIBRARY_PATH needed)
+### Step 1: Build
 
 ```bash
 cmake -S source -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+```
+
+### Step 2: Install
+
+Choose one of the following install locations.
+
+**System-wide** (`/usr/local` — requires sudo, no environment setup needed):
+
+```bash
 sudo cmake --install build
 ```
 
-This installs to `/usr/local` by default:
-
-```
-/usr/local/lib/libapiexec.so         # shared library
-/usr/local/lib/libapiexec_capi.a     # static library
-/usr/local/lib/pkgconfig/apiexec.pc  # pkg-config
-/usr/local/lib/cmake/apiexec/        # CMake find_package support
-/usr/local/include/apiexec/          # all headers
-```
-
-After a system-wide install, no `LD_LIBRARY_PATH` or `PKG_CONFIG_PATH` exports are needed — the linker and pkg-config find the library automatically.
-
-### User-local install (~/.local)
+**User-local** (`~/.local` — no sudo, requires environment setup):
 
 ```bash
-cmake -S source -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/.local
-cmake --build build
-cmake --install build
+cmake --install build --prefix $HOME/.local
 ```
 
-Add these to your shell profile (`~/.bashrc` or `~/.zshrc`) once:
+**Custom prefix:**
 
 ```bash
+cmake --install build --prefix /opt/apiexec
+```
+
+### Step 3: Set up environment (skip for system-wide installs)
+
+If you installed to `~/.local` or a custom prefix, add these to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+# For ~/.local installs:
 export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
 export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
 export CMAKE_PREFIX_PATH="$HOME/.local:$CMAKE_PREFIX_PATH"
+
+# For custom prefix installs (replace /opt/apiexec with your prefix):
+export LD_LIBRARY_PATH="/opt/apiexec/lib:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="/opt/apiexec/lib/pkgconfig:$PKG_CONFIG_PATH"
+export CMAKE_PREFIX_PATH="/opt/apiexec:$CMAKE_PREFIX_PATH"
 ```
 
-### Custom prefix
+Then reload your shell: `source ~/.bashrc`
+
+**Why are these needed?** `/usr/local` is in the compiler and linker's default search path, so system-wide installs work out of the box. Other prefixes are not — these exports tell the linker (`LD_LIBRARY_PATH`), pkg-config (`PKG_CONFIG_PATH`), and CMake (`CMAKE_PREFIX_PATH`) where to find the library.
+
+### Step 4: Verify
 
 ```bash
-cmake -S source -B build -DCMAKE_INSTALL_PREFIX=/opt/apiexec
-cmake --build build
-sudo cmake --install build
-```
-
-### Verify installation
-
-```bash
-# pkg-config
+# Check pkg-config finds the library
 pkg-config --libs --cflags apiexec
-# Output: -I/usr/local/include/apiexec -L/usr/local/lib -lapiexec -lcurl
+# Expected: -I<prefix>/include/apiexec -L<prefix>/lib -lapiexec -lcurl
 
-# Compile a test program
-echo '#include "c_api.h"
+# Compile and run a test program
+cat > /tmp/test_apiexec.c << 'EOF'
+#include "c_api.h"
 #include <stdio.h>
-int main() { printf("ABI version: %d\n", APIEXEC_ABI_VERSION); }' > /tmp/test.c
+int main() {
+    printf("ABI version: %d\n", APIEXEC_ABI_VERSION);
+    StreamHandle* h = stream_create("generic_rest",
+        "{\"base_url\":\"http://localhost\"}", NULL);
+    printf("stream_create: %s\n", h ? "OK" : "OK (no server)");
+    if (h) stream_destroy(h);
+    return 0;
+}
+EOF
 
-gcc /tmp/test.c $(pkg-config --cflags --libs apiexec) -o /tmp/test && /tmp/test
-# Output: ABI version: 1
+gcc /tmp/test_apiexec.c $(pkg-config --cflags --libs apiexec) -o /tmp/test_apiexec
+/tmp/test_apiexec
+# Expected:
+#   ABI version: 1
+#   stream_create: OK
 ```
+
+If `pkg-config` reports `Package apiexec was not found`, your `PKG_CONFIG_PATH` is not set — go back to Step 3.
 
 ### What gets installed
 
@@ -158,13 +177,11 @@ gcc /tmp/test.c $(pkg-config --cflags --libs apiexec) -o /tmp/test && /tmp/test
 
 ### Uninstall
 
-CMake doesn't provide a built-in uninstall. To remove:
-
 ```bash
-# If you installed to /usr/local
+# System-wide
 sudo xargs rm < build/install_manifest.txt
 
-# If you installed to ~/.local
+# User-local or custom prefix
 xargs rm < build/install_manifest.txt
 ```
 
@@ -236,18 +253,25 @@ Output shows sequential vs prefetch timings and the percentage improvement.
 
 ## Using as a library
 
-After installation, there are four ways to link apiexec into your project.
+After installation (see above), there are four ways to link apiexec.
 
-### Option 1: pkg-config (recommended for C/C++)
+### Option 1: pkg-config (recommended)
+
+Handles `-I` and `-L` flags automatically regardless of install prefix.
 
 ```bash
 # Compile and link in one step
 gcc my_app.c $(pkg-config --cflags --libs apiexec) -o my_app
 
-# Or in a Makefile
+# C++
+g++ -std=c++17 my_app.cpp $(pkg-config --cflags --libs apiexec) -o my_app
+
+# In a Makefile
 CFLAGS  += $(shell pkg-config --cflags apiexec)
 LDFLAGS += $(shell pkg-config --libs apiexec)
 ```
+
+This is the recommended approach because it works identically for `/usr/local`, `~/.local`, and custom prefix installs — as long as `PKG_CONFIG_PATH` is set correctly (see Installation Step 3).
 
 ### Option 2: CMake find_package
 
@@ -258,9 +282,10 @@ target_link_libraries(my_app PRIVATE apiexec::apiexec)
 ```
 
 ```bash
-# Configure (finds apiexec automatically if installed to system path)
+# System-wide install — found automatically
 cmake -S . -B build
-# Or if installed to ~/.local:
+
+# ~/.local install — tell CMake where to look
 cmake -S . -B build -DCMAKE_PREFIX_PATH=$HOME/.local
 ```
 
@@ -273,20 +298,26 @@ target_link_libraries(my_app PRIVATE apiexec_all)
 
 ### Option 4: Direct compiler flags
 
-```bash
-# Shared library (preferred — includes all adapters)
-gcc my_app.c -I/usr/local/include/apiexec -lapiexec -o my_app
+If you can't use pkg-config or CMake, pass the include and library paths manually. Replace `<prefix>` with your install prefix (`/usr/local`, `$HOME/.local`, etc.).
 
-# Static libraries (requires --whole-archive for adapter registration)
+```bash
+# Shared library (preferred — includes all adapters, no --whole-archive needed)
 g++ -std=c++17 my_app.cpp \
-    -I/usr/local/include/apiexec \
+    -I<prefix>/include/apiexec \
+    -L<prefix>/lib \
+    -lapiexec -o my_app
+
+# Static libraries (requires --whole-archive for adapter self-registration)
+g++ -std=c++17 my_app.cpp \
+    -I<prefix>/include/apiexec \
+    -L<prefix>/lib \
     -lapiexec_capi \
     -Wl,--whole-archive -lapiexec_adapters -Wl,--no-whole-archive \
     -lapiexec_transport -lapiexec_policy \
     -lcurl -lstdc++ -lpthread
 ```
 
-The `--whole-archive` flag on `apiexec_adapters` is required to preserve adapter self-registration static initialisers when linking static libraries.
+**Common mistake:** forgetting `-I<prefix>/include/apiexec` and `-L<prefix>/lib`. Without these, the compiler can't find `c_api.h` and the linker can't find `libapiexec.so`. Use pkg-config (Option 1) to avoid this entirely.
 
 ### C API usage
 
