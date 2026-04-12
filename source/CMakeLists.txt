@@ -99,6 +99,59 @@ target_link_libraries(apiexec_all INTERFACE
 )
 
 # ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+
+# Headers
+install(DIRECTORY core/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/apiexec/core
+    FILES_MATCHING PATTERN "*.hpp")
+install(DIRECTORY transport/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/apiexec/transport
+    FILES_MATCHING PATTERN "*.hpp")
+install(DIRECTORY policy/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/apiexec/policy
+    FILES_MATCHING PATTERN "*.hpp")
+install(DIRECTORY adapters/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/apiexec/adapters
+    FILES_MATCHING PATTERN "*.hpp")
+install(FILES c_api/c_api.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/apiexec)
+
+# Libraries
+install(TARGETS apiexec_shared
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(TARGETS apiexec_capi apiexec_transport apiexec_policy apiexec_adapters
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+# pkg-config
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/apiexec.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/apiexec.pc
+    @ONLY
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/apiexec.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+)
+
+# CMake package config (find_package support)
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/apiexec-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/apiexec-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/apiexec-config.cmake
+    @ONLY
+)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/apiexec-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/apiexec-config-version.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apiexec
+)
+
+# ---------------------------------------------------------------------------
 # Main executable (smoke test driver)
 # ---------------------------------------------------------------------------
 add_executable(apiexec main.cpp)

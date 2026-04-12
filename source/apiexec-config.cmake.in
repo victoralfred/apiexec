@@ -1,0 +1,19 @@
+@PACKAGE_INIT@
+
+# apiexec CMake package config
+# Usage:
+#   find_package(apiexec REQUIRED)
+#   target_link_libraries(my_app PRIVATE apiexec::apiexec)
+
+include(CMakeFindDependencyMacro)
+find_dependency(CURL)
+find_dependency(nlohmann_json 3.11)
+
+if(NOT TARGET apiexec::apiexec)
+    add_library(apiexec::apiexec SHARED IMPORTED)
+    set_target_properties(apiexec::apiexec PROPERTIES
+        IMPORTED_LOCATION "@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_LIBDIR@/libapiexec.so"
+        INTERFACE_INCLUDE_DIRECTORIES "@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_INCLUDEDIR@/apiexec"
+        INTERFACE_LINK_LIBRARIES "CURL::libcurl"
+    )
+endif()

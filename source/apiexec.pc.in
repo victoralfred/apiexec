@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: apiexec
+Description: Vendor-agnostic streaming execution engine for APIs
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lapiexec -lcurl
+Cflags: -I${includedir}/apiexec
