@@ -269,6 +269,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/summarise.cpp")
     target_link_libraries(summarise PRIVATE apiexec_all nlohmann_json::nlohmann_json)
 endif()
 
+# Ollama demo
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/ollama_demo.cpp")
+    add_executable(ollama_demo examples/ollama_demo.cpp)
+    target_link_libraries(ollama_demo PRIVATE apiexec_all nlohmann_json::nlohmann_json)
+endif()
+
 # Soak test (configurable duration; default 10s for CI, 86400 for full soak)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/soak/soak_test.cpp")
     add_executable(soak_test ../tests/soak/soak_test.cpp)
