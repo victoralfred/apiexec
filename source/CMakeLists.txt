@@ -6,6 +6,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # -fPIC for shared library support
 
+# --whole-archive forces static initializers (adapter self-registration) to
+# be linked in. GNU ld and Apple ld use different spellings.
+if(APPLE)
+    macro(whole_archive_link target scope lib)
+        target_link_libraries(${target} ${scope}
+            -Wl,-force_load,$<TARGET_FILE:${lib}>
+        )
+    endmacro()
+else()
+    macro(whole_archive_link target scope lib)
+        target_link_libraries(${target} ${scope}
+            -Wl,--whole-archive ${lib} -Wl,--no-whole-archive
+        )
+    endmacro()
+endif()
+
 # Sanitiser option
 option(SANITIZE "Enable ASAN + UBSAN" OFF)
 if(SANITIZE)
@@ -66,18 +82,18 @@ target_include_directories(apiexec_capi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api
 target_link_libraries(apiexec_capi
     PUBLIC apiexec_core
     PRIVATE apiexec_transport apiexec_policy
-            -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
             nlohmann_json::nlohmann_json
 )
+whole_archive_link(apiexec_capi PRIVATE apiexec_adapters)
 
 # Shared library for language bindings (Go cgo, Python cffi, etc.)
 add_library(apiexec_shared SHARED c_api/c_api.cpp)
 target_include_directories(apiexec_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c_api)
 target_link_libraries(apiexec_shared
     PRIVATE apiexec_transport apiexec_policy
-            -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
             nlohmann_json::nlohmann_json CURL::libcurl
 )
+whole_archive_link(apiexec_shared PRIVATE apiexec_adapters)
 set_target_properties(apiexec_shared PROPERTIES
     OUTPUT_NAME apiexec
     VERSION ${PROJECT_VERSION}
@@ -94,9 +110,9 @@ target_link_libraries(apiexec_all INTERFACE
     apiexec_core
     apiexec_transport
     apiexec_policy
-    -Wl,--whole-archive apiexec_adapters -Wl,--no-whole-archive
     apiexec_capi
 )
+whole_archive_link(apiexec_all INTERFACE apiexec_adapters)
 
 # ---------------------------------------------------------------------------
 # Installation
