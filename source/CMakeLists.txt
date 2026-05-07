@@ -115,6 +115,7 @@ target_link_libraries(apiexec_all INTERFACE
     apiexec_transport
     apiexec_policy
     apiexec_capi
+    nlohmann_json::nlohmann_json
 )
 whole_archive_link(apiexec_all INTERFACE apiexec_adapters)
 
