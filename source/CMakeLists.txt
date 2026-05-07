@@ -8,10 +8,14 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # -fPIC for shared library support
 
 # --whole-archive forces static initializers (adapter self-registration) to
 # be linked in. GNU ld and Apple ld use different spellings.
+# target_link_options is used for the Apple path because -force_load requires
+# a resolved file path (via generator expression) which CMake mis-parses when
+# passed through target_link_libraries.
 if(APPLE)
     macro(whole_archive_link target scope lib)
-        target_link_libraries(${target} ${scope}
-            -Wl,-force_load,$<TARGET_FILE:${lib}>
+        target_link_libraries(${target} ${scope} ${lib})
+        target_link_options(${target} ${scope}
+            "LINKER:-force_load,$<TARGET_FILE:${lib}>"
         )
     endmacro()
 else()
